@@ -5,14 +5,21 @@
 #include "pid.hpp"
 
 #include <cstring>
+modules::MsgAhrs debug_ahrs_msg{};
+volatile float debug_gyro_data_x = 0.0f;
+volatile float debug_gyro_data_y = 0.0f;
+volatile float debug_acc_data_z = 0.0f;
 
 namespace modules {
 namespace {
 
-constexpr bool kDisableTemperatureControlForBringup = true;
+constexpr bool kDisableTemperatureControlForBringup = false;
+constexpr auto kImuHeaterPwm = bsp::PwmInstance::Tim3_Ch4;
+
 
 }  // namespace
-
+// volatile float debug_imu_temp=0;
+extern "C" volatile float debug_imu_temp = 0.0f;
 Ahrs& Ahrs::instance() {
   static Ahrs inst;
   return inst;
@@ -114,6 +121,9 @@ void Ahrs::imu_thread_loop() {
         imu_.acc_data_.x +=
             config_.imu_offset_x * imu_.gyro_data_.z * imu_.gyro_data_.z;
       }
+      debug_gyro_data_x = imu_.gyro_data_.x;
+      debug_gyro_data_y = imu_.gyro_data_.y;
+      debug_acc_data_z = imu_.acc_data_.z;
       ekf.update_kalman(imu_.gyro_data_.x, imu_.gyro_data_.y, imu_.gyro_data_.z,
                         imu_.acc_data_.x, imu_.acc_data_.y, imu_.acc_data_.z,
                         bsp::dwt_delta_s(&ins_count));
@@ -124,6 +134,7 @@ void Ahrs::imu_thread_loop() {
     os::sem_give(&heartbeat_sem_);
 
     fill_ahrs_msg(msg, ekf);
+    memcpy(&debug_ahrs_msg, &msg, sizeof(debug_ahrs_msg));
     os::publish(ahrs_topic_, &msg, sizeof(msg));
     os::thread_sleep(1);
   }
@@ -131,8 +142,8 @@ void Ahrs::imu_thread_loop() {
 
 void Ahrs::temp_thread_loop() {
   if (kDisableTemperatureControlForBringup) {
-    bsp::pwm_set_duty(bsp::PwmInstance::Tim12_Ch2, 0.0f);
-    bsp::pwm_stop(bsp::PwmInstance::Tim12_Ch2);
+    bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
+    bsp::pwm_stop(kImuHeaterPwm);
     for (;;) {
       imu_.read_acc_temperature(&imu_.acc_data_.temperature);
       os::thread_sleep(500);
@@ -151,8 +162,8 @@ void Ahrs::temp_thread_loop() {
   pid.scalar_b_ = 0.08f;
 
   imu_.target_temp_ = 45.0f;
-  bsp::pwm_init<bsp::PwmInstance::Tim12_Ch2>();
-  bsp::pwm_start(bsp::PwmInstance::Tim12_Ch2);
+  bsp::pwm_init<bsp::PwmInstance::Tim3_Ch4>();
+  bsp::pwm_start(kImuHeaterPwm);
 
   float tmp_last = imu_.acc_data_.temperature;
   os::thread_sleep(1000);
@@ -160,30 +171,37 @@ void Ahrs::temp_thread_loop() {
   if (tmp_last == imu_.acc_data_.temperature) {
     for (;;) {
       os::thread_sleep(1000);
+      // debug_imu_temp = imu_.acc_data_.temperature;
     }
-  }
+  }//现在阻塞了之后的温控线程
+  // if(tmp_last == imu_.acc_data_.temperature){
+  //   imu_.self_test_.temp_ctrl_err = true;
+  //   bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
+  // }
 
   uint32_t init_heating_count = 0;
 
   for (;;) {
     imu_.read_acc_temperature(&imu_.acc_data_.temperature);
+    debug_imu_temp = imu_.acc_data_.temperature;
     if (imu_.acc_data_.temperature > 55.0f) {
-      bsp::pwm_set_duty(bsp::PwmInstance::Tim12_Ch2, 0.0f);
+      bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
     } else if (imu_.acc_data_.temperature < 45.0f) {
       if (init_heating_count < 2) {
         ++init_heating_count;
-        // imu_.temperature_control(imu_.target_temp_);
+        imu_.temperature_control(imu_.target_temp_);
       } else {
         ++init_heating_count;
-        bsp::pwm_set_duty(bsp::PwmInstance::Tim12_Ch2, 0.0f);
+        bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
         if (init_heating_count == 8) {
           init_heating_count = 0;
         }
       }
     } else {
-      // imu_.temperature_control(imu_.target_temp_);
+      imu_.temperature_control(imu_.target_temp_);
       //TODO：关掉温控
     }
+
     os::thread_sleep(125);
   }
 }
