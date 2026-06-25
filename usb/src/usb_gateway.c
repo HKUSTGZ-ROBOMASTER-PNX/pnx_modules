@@ -129,7 +129,7 @@ static UsbMessageEntry* match_rx_message(const uint8_t* data, ULONG length) {
     if (desc->rx_header != 0 && data[0] != desc->rx_header) {
       continue;
     }
-    if (desc->use_crc16 && pnx_crc16_verify(data, desc->wire_size) != 0) {
+    if (desc->use_crc16 && pnx_crc16_verify(data, desc->wire_size) == 0) {
       continue;
     }
     return &g_entries[i];

@@ -152,35 +152,36 @@ struct MsgChassisUi {
 
 struct MsgVisionRx {
   uint8_t header = 0;
-  uint8_t tracking : 1;
-  uint8_t fire : 1;
-  uint8_t id : 4;
-  uint8_t reserved : 2;
-  float pitch = 0.0f;
+  uint8_t mode = 0;
   float yaw = 0.0f;
-  float pitch_acc = 0.0f;
-  float pitch_vel = 0.0f;
-  float yaw_acc = 0.0f;
   float yaw_vel = 0.0f;
-  float project_x = 0.0f;
-  float project_y = 0.0f;
-  float distance = 0.0f;
+  float yaw_acc = 0.0f;
+  float pitch = 0.0f;
+  float pitch_vel = 0.0f;
+  float pitch_acc = 0.0f;
   uint16_t checksum = 0;
 } __attribute__((packed));
 
 struct MsgVisionTx {
   uint8_t header = 0;
   uint8_t detect_color : 1;
-  uint8_t reset_tracker : 1;
-  uint8_t set_target : 4;
+  bool reset_tracker : 1;
+  uint8_t set_target = 0;
   uint8_t reserved : 2;
   float q1 = 0.0f;
   float q2 = 0.0f;
   float q3 = 0.0f;
   float q4 = 0.0f;
+  float yaw = 0.0f;
   float gyro_yaw = 0.0f;
+  float pitch = 0.0f;
   float gyro_pitch = 0.0f;
+  float bullet_speed = 0.0f;
+  uint16_t bullet_cnt = 0;
   uint16_t checksum = 0;
 } __attribute__((packed));
+
+static_assert(sizeof(MsgVisionRx) == 28, "MsgVisionRx must match legacy wire protocol");
+static_assert(sizeof(MsgVisionTx) == 44, "MsgVisionTx must match legacy wire protocol");
 
 }  // namespace modules
