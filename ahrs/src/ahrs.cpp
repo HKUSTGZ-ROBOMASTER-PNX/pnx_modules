@@ -1,209 +1,234 @@
 #include "ahrs.hpp"
 
 #include "bsp_dwt.hpp"
-#include "bsp_pwm.hpp"
-#include "pid.hpp"
+#include "constants.hpp"
 
+#include <cmath>
 #include <cstring>
-modules::MsgAhrs debug_ahrs_msg{};
-volatile float debug_gyro_data_x = 0.0f;
-volatile float debug_gyro_data_y = 0.0f;
-volatile float debug_acc_data_z = 0.0f;
 
-namespace modules {
-namespace {
+namespace ahrs
+{
 
-constexpr bool kDisableTemperatureControlForBringup = false;
-constexpr auto kImuHeaterPwm = bsp::PwmInstance::Tim3_Ch4;
+namespace
+{
 
+uint32_t ins_count = 0;
 
-}  // namespace
-// volatile float debug_imu_temp=0;
-extern "C" volatile float debug_imu_temp = 0.0f;
-Ahrs& Ahrs::instance() {
-  static Ahrs inst;
-  return inst;
-}
-
-os::Status Ahrs::create_resources() {
-  if (os::sem_create(&heartbeat_sem_, "ahrs_heartbeat", 0) != os::Status::Ok) {
-    return os::Status::Error;
-  }
-
-  ahrs_topic_ = os::create_topic("ahrs", sizeof(MsgAhrs));
-  if (ahrs_topic_ == nullptr) {
-    return os::Status::Error;
-  }
-
-  imu_thread_.entry = imu_thread_entry;
-  imu_thread_.user_arg = 0;
-  if (os::thread_create(&imu_thread_, "ahrs_imu", imu_thread_entry, 0, imu_stack_,
-                        sizeof(imu_stack_), config_.imu_thread_priority) != os::Status::Ok) {
-    return os::Status::Error;
-  }
-
-  temp_thread_.entry = temp_thread_entry;
-  temp_thread_.user_arg = 0;
-  if (os::thread_create(&temp_thread_, "ahrs_temp", temp_thread_entry, 0, temp_stack_,
-                        sizeof(temp_stack_), config_.temp_thread_priority) != os::Status::Ok) {
-    return os::Status::Error;
-  }
-
-  return os::Status::Ok;
-}
-
-os::Status Ahrs::init(const AhrsConfig& config) {
-  if (initialized_) {
-    return os::Status::Ok;
-  }
-  config_ = config;
-  const os::Status status = create_resources();
-  if (status == os::Status::Ok) {
-    initialized_ = true;
-  }
-  return status;
-}
-
-void Ahrs::imu_thread_entry(uint32_t) { instance().imu_thread_loop(); }
-
-void Ahrs::temp_thread_entry(uint32_t) { instance().temp_thread_loop(); }
-
-void Ahrs::fill_ahrs_msg(MsgAhrs& msg, const QuaternionEkf& ekf) {
-  std::memcpy(msg.quaternion, ekf.q, sizeof(ekf.q));
-  msg.yaw = ekf.yaw;
-  msg.pitch = ekf.pitch;
-  msg.roll = ekf.roll;
-  msg.total_yaw = ekf.total_yaw;
-  msg.gyro_r = imu_.gyro_data_.x;
-  msg.gyro_p = imu_.gyro_data_.y;
-  msg.gyro_y = imu_.gyro_data_.z;
-  msg.accel[0] = imu_.acc_data_.x;
-  msg.accel[1] = imu_.acc_data_.y;
-  msg.accel[2] = imu_.acc_data_.z;
-}
-
-void Ahrs::imu_thread_loop() {
-  MsgAhrs msg{};
-  QuaternionEkf ekf;
-
-  auto& self_test = imu_.self_test_;
-  self_test.acc_chip_id_err = true;
-  self_test.acc_data_err = true;
-  self_test.gyro_chip_id_err = true;
-  self_test.gyro_data_err = true;
-  self_test.init_err = true;
-  self_test.calibrate_err = false;
-  self_test.temp_ctrl_err = false;
-
-  imu_.config();
-  imu_.verify_acc_chip_id();
-  imu_.verify_gyro_chip_id();
-  imu_.read_acc_temperature(&imu_.acc_data_.temperature);
-  if (kDisableTemperatureControlForBringup && imu_.acc_data_.temperature < 20.0f) {
-    imu_.acc_data_.temperature = 20.0f;
-  }
-
-  while (imu_.acc_data_.temperature < 20.0f) {//NOTE：原本是40，温度过低不是正常工作
-    os::thread_sleep(100);
-  }
-  self_test.init_err = false;
-
-  imu_.calibrate();
-
-  uint32_t ins_count = 0;
-  bsp::dwt_delta_s(&ins_count);
-
-  for (;;) {
-    if (!self_test.init_err) {
-      imu_.read_acc_data(&imu_.acc_data_);
-      imu_.read_gyro_data(&imu_.gyro_data_);
-      if (config_.imu_offset_x != 0.0f) {
-        imu_.acc_data_.x +=
-            config_.imu_offset_x * imu_.gyro_data_.z * imu_.gyro_data_.z;
-      }
-      debug_gyro_data_x = imu_.gyro_data_.x;
-      debug_gyro_data_y = imu_.gyro_data_.y;
-      debug_acc_data_z = imu_.acc_data_.z;
-      ekf.update_kalman(imu_.gyro_data_.x, imu_.gyro_data_.y, imu_.gyro_data_.z,
-                        imu_.acc_data_.x, imu_.acc_data_.y, imu_.acc_data_.z,
-                        bsp::dwt_delta_s(&ins_count));
-    }
-
-    os::sem_give(&heartbeat_sem_);
-    os::sem_give(&heartbeat_sem_);
-    os::sem_give(&heartbeat_sem_);
-
-    fill_ahrs_msg(msg, ekf);
-    memcpy(&debug_ahrs_msg, &msg, sizeof(debug_ahrs_msg));
-    os::publish(ahrs_topic_, &msg, sizeof(msg));
-    os::thread_sleep(1);
-  }
-}
-
-void Ahrs::temp_thread_loop() {
-  if (kDisableTemperatureControlForBringup) {
-    bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
-    bsp::pwm_stop(kImuHeaterPwm);
-    for (;;) {
-      imu_.read_acc_temperature(&imu_.acc_data_.temperature);
-      os::thread_sleep(500);
-    }
-  }
-
-  auto& pid = imu_.temp_pid_;
-  pid.mode_ = pid::Position | pid::IntegralLimit | pid::ChangingIntegralRate |
-              pid::DerivativeOnMeasurement;
-  pid.kp_ = 650.0f;
-  pid.ki_ = 0.06f;
-  pid.kd_ = 10.0f;
-  pid.max_out_ = 300.0f;
-  pid.max_i_out_ = 300.0f;
-  pid.scalar_a_ = 3.5f;
-  pid.scalar_b_ = 0.08f;
-
-  imu_.target_temp_ = 45.0f;
-  bsp::pwm_init<bsp::PwmInstance::Tim3_Ch4>();
-  bsp::pwm_start(kImuHeaterPwm);
-
-  float tmp_last = imu_.acc_data_.temperature;
-  os::thread_sleep(1000);
-  imu_.read_acc_temperature(&imu_.acc_data_.temperature);
-  if (tmp_last == imu_.acc_data_.temperature) {
-    for (;;) {
-      os::thread_sleep(1000);
-      // debug_imu_temp = imu_.acc_data_.temperature;
-    }
-  }//现在阻塞了之后的温控线程
-  // if(tmp_last == imu_.acc_data_.temperature){
-  //   imu_.self_test_.temp_ctrl_err = true;
-  //   bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
-  // }
-
-  uint32_t init_heating_count = 0;
-
-  for (;;) {
-    imu_.read_acc_temperature(&imu_.acc_data_.temperature);
-    debug_imu_temp = imu_.acc_data_.temperature;
-    if (imu_.acc_data_.temperature > 55.0f) {
-      bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
-    } else if (imu_.acc_data_.temperature < 45.0f) {
-      if (init_heating_count < 2) {
-        ++init_heating_count;
-        imu_.temperature_control(imu_.target_temp_);
-      } else {
-        ++init_heating_count;
-        bsp::pwm_set_duty(kImuHeaterPwm, 0.0f);
-        if (init_heating_count == 8) {
-          init_heating_count = 0;
+float solve_delta_s(uint32_t* last)
+{
+    if (!bsp::dwt::initialized())
+    {
+        if (bsp::dwt::init() != types::status::ok)
+        {
+            return 0.0005f;
         }
-      }
-    } else {
-      imu_.temperature_control(imu_.target_temp_);
-      //TODO：关掉温控
     }
 
-    os::thread_sleep(125);
-  }
+    const float dt = bsp::dwt::delta_s(last);
+    return dt > 0.0f ? dt : 0.0005f;
 }
 
-}  // namespace modules
+void update_dt_telemetry(telemetry& out, float dt)
+{
+    out.dt_s = dt;
+    out.dt_min_s = out.update_count == 0U || dt < out.dt_min_s ? dt : out.dt_min_s;
+    out.dt_max_s = dt > out.dt_max_s ? dt : out.dt_max_s;
+}
+
+float vector_norm(float x, float y, float z)
+{
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+} // namespace
+
+service& service::instance()
+{
+    static service inst;
+    return inst;
+}
+
+bool service::create_resources()
+{
+    if (tx_semaphore_create(&heartbeat_sem_, const_cast<CHAR*>("ahrs_hb"), 0) != TX_SUCCESS)
+    {
+        return false;
+    }
+    if (tx_semaphore_create(&gyro_data_ready_sem_, const_cast<CHAR*>("ahrs_gyro"), 0) != TX_SUCCESS)
+    {
+        return false;
+    }
+
+    ahrs_topic_ = msg::create<message>();
+    if (ahrs_topic_ == nullptr)
+    {
+        return false;
+    }
+
+    if (tx_thread_create(&imu_thread_, const_cast<CHAR*>("ahrs_imu"), imu_thread_entry,
+                         reinterpret_cast<ULONG>(this),
+                         imu_stack_, sizeof(imu_stack_), cfg_.imu_thread_priority,
+                         cfg_.imu_thread_priority, TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+    {
+        return false;
+    }
+
+    imu::bmi088::temp_control_config temp_cfg{};
+    temp_cfg.enabled = cfg_.temperature_control_enabled;
+    temp_cfg.target_temp = cfg_.target_temp;
+    temp_cfg.thread_priority = cfg_.temp_thread_priority;
+    if (!imu_.start_temperature_control(temp_cfg))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool service::init(const config& cfg)
+{
+    if (initialized_)
+    {
+        return true;
+    }
+    cfg_ = cfg;
+    if (msg::init() != types::status::ok)
+    {
+        return false;
+    }
+    if (!create_resources())
+    {
+        return false;
+    }
+    initialized_ = true;
+    telemetry_.initialized = true;
+    telemetry_.resources_created = true;
+    return true;
+}
+
+void service::fill_msg(message& msg, const quaternion_ekf& ekf, const imu::reading& reading)
+{
+    std::memcpy(msg.quaternion, ekf.q, sizeof(ekf.q));
+    msg.yaw = ekf.yaw;
+    msg.pitch = ekf.pitch;
+    msg.roll = ekf.roll;
+    msg.total_yaw = ekf.total_yaw;
+    msg.gyro_r = reading.gyro.x;
+    msg.gyro_p = reading.gyro.y;
+    msg.gyro_y = reading.gyro.z;
+    msg.accel[0] = reading.accel.x;
+    msg.accel[1] = reading.accel.y;
+    msg.accel[2] = reading.accel.z;
+}
+
+void service::gyro_data_ready_callback(void* user)
+{
+    auto* self = static_cast<service*>(user);
+    if (self == nullptr)
+    {
+        return;
+    }
+    ++self->telemetry_.gyro_ready_count;
+    tx_semaphore_put(&self->gyro_data_ready_sem_);
+}
+
+void service::wait_for_gyro_data_ready()
+{
+    tx_semaphore_get(&gyro_data_ready_sem_, TX_WAIT_FOREVER);
+    while (tx_semaphore_get(&gyro_data_ready_sem_, TX_NO_WAIT) == TX_SUCCESS)
+    {
+        ++telemetry_.gyro_ready_drained;
+    }
+}
+
+void service::imu_thread_entry(ULONG arg)
+{
+    auto* self = reinterpret_cast<service*>(arg);
+    if (self == nullptr)
+    {
+        self = &instance();
+    }
+
+    message msg{};
+    imu::reading reading{};
+    quaternion_ekf ekf;
+
+    self->imu_.test.acc_chip_id_err = true;
+    self->imu_.test.acc_data_err = true;
+    self->imu_.test.gyro_chip_id_err = true;
+    self->imu_.test.gyro_data_err = true;
+    self->imu_.test.init_err = true;
+    self->imu_.test.calibrate_err = false;
+    self->imu_.test.temp_ctrl_err = false;
+    self->imu_.set_gyro_data_ready_callback(gyro_data_ready_callback, self);
+
+    self->imu_.configure();
+    self->telemetry_.imu_configured = true;
+    self->imu_.verify_acc_chip_id();
+    self->telemetry_.accel_chip_ok = !self->imu_.test.acc_chip_id_err;
+    self->imu_.verify_gyro_chip_id();
+    self->telemetry_.gyro_chip_ok = !self->imu_.test.gyro_chip_id_err;
+
+    while (!self->imu_.temperature_ready())
+    {
+        self->telemetry_.temperature = self->imu_.temperature();
+        self->telemetry_.temperature_ready = false;
+        tx_thread_sleep(100);
+    }
+    self->telemetry_.temperature_ready = true;
+    self->telemetry_.temperature = self->imu_.temperature();
+    self->imu_.test.init_err = false;
+    self->imu_.calibrate();
+    self->telemetry_.calibrated = !self->imu_.test.calibrate_err;
+    while (tx_semaphore_get(&self->gyro_data_ready_sem_, TX_NO_WAIT) == TX_SUCCESS)
+    {
+        ++self->telemetry_.gyro_ready_drained;
+    }
+
+    if (!bsp::dwt::initialized())
+    {
+        bsp::dwt::init();
+    }
+    bsp::dwt::delta_s(&ins_count);
+
+    for (;;)
+    {
+        self->wait_for_gyro_data_ready();
+        self->imu_loop_monitor_.begin();
+        if (!self->imu_.test.init_err)
+        {
+            self->telemetry_.read_ok = self->imu_.read(reading);
+            if (self->cfg_.imu_offset_x != 0.0f)
+            {
+                reading.accel.x += self->cfg_.imu_offset_x * reading.gyro.z * reading.gyro.z;
+            }
+            const float dt = solve_delta_s(&ins_count);
+            ekf.update_kalman(reading.gyro.x, reading.gyro.y, reading.gyro.z,
+                              reading.accel.x, reading.accel.y, reading.accel.z,
+                              dt);
+            update_dt_telemetry(self->telemetry_, dt);
+            self->telemetry_.solved = ekf.UpdateCount > 0U;
+            self->telemetry_.update_count = static_cast<uint32_t>(ekf.UpdateCount);
+            self->telemetry_.temperature = reading.temperature;
+            self->telemetry_.accel_norm = vector_norm(reading.accel.x, reading.accel.y, reading.accel.z);
+            self->telemetry_.gyro_norm = vector_norm(reading.gyro.x, reading.gyro.y, reading.gyro.z);
+            std::memcpy(self->telemetry_.quaternion, ekf.q, sizeof(ekf.q));
+            self->telemetry_.yaw = ekf.yaw;
+            self->telemetry_.pitch = ekf.pitch;
+            self->telemetry_.roll = ekf.roll;
+            self->telemetry_.total_yaw = ekf.total_yaw;
+        }
+
+        tx_semaphore_put(&self->heartbeat_sem_);
+        self->fill_msg(msg, ekf, reading);
+        msg::publish(self->ahrs_topic_, msg);
+        self->imu_loop_monitor_.end();
+        const auto& loop_stats = self->imu_loop_monitor_.stats();
+        self->telemetry_.loop_runtime_us = loop_stats.last_us;
+        self->telemetry_.loop_runtime_max_us = loop_stats.max_us;
+        self->telemetry_.loop_runtime_avg_us = loop_stats.average_us();
+        self->telemetry_.loop_runtime_overruns = loop_stats.overrun_count;
+    }
+}
+
+} // namespace ahrs
