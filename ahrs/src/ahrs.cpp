@@ -3,7 +3,6 @@
 #include "bsp_dwt.hpp"
 #include "constants.hpp"
 
-#include <cmath>
 #include <cstring>
 
 namespace ahrs
@@ -26,18 +25,6 @@ float solve_delta_s(uint32_t* last)
 
     const float dt = bsp::dwt::delta_s(last);
     return dt > 0.0f ? dt : 0.0005f;
-}
-
-void update_dt_telemetry(telemetry& out, float dt)
-{
-    out.dt_s = dt;
-    out.dt_min_s = out.update_count == 0U || dt < out.dt_min_s ? dt : out.dt_min_s;
-    out.dt_max_s = dt > out.dt_max_s ? dt : out.dt_max_s;
-}
-
-float vector_norm(float x, float y, float z)
-{
-    return std::sqrt(x * x + y * y + z * z);
 }
 
 } // namespace
@@ -101,8 +88,6 @@ bool service::init(const config& cfg)
         return false;
     }
     initialized_ = true;
-    telemetry_.initialized = true;
-    telemetry_.resources_created = true;
     return true;
 }
 
@@ -128,17 +113,7 @@ void service::gyro_data_ready_callback(void* user)
     {
         return;
     }
-    ++self->telemetry_.gyro_ready_count;
     tx_semaphore_put(&self->gyro_data_ready_sem_);
-}
-
-void service::wait_for_gyro_data_ready()
-{
-    tx_semaphore_get(&gyro_data_ready_sem_, TX_WAIT_FOREVER);
-    while (tx_semaphore_get(&gyro_data_ready_sem_, TX_NO_WAIT) == TX_SUCCESS)
-    {
-        ++telemetry_.gyro_ready_drained;
-    }
 }
 
 void service::imu_thread_entry(ULONG arg)
@@ -163,26 +138,18 @@ void service::imu_thread_entry(ULONG arg)
     self->imu_.set_gyro_data_ready_callback(gyro_data_ready_callback, self);
 
     self->imu_.configure();
-    self->telemetry_.imu_configured = true;
     self->imu_.verify_acc_chip_id();
-    self->telemetry_.accel_chip_ok = !self->imu_.test.acc_chip_id_err;
     self->imu_.verify_gyro_chip_id();
-    self->telemetry_.gyro_chip_ok = !self->imu_.test.gyro_chip_id_err;
 
     while (!self->imu_.temperature_ready())
     {
-        self->telemetry_.temperature = self->imu_.temperature();
-        self->telemetry_.temperature_ready = false;
         tx_thread_sleep(100);
     }
-    self->telemetry_.temperature_ready = true;
-    self->telemetry_.temperature = self->imu_.temperature();
     self->imu_.test.init_err = false;
     self->imu_.calibrate();
-    self->telemetry_.calibrated = !self->imu_.test.calibrate_err;
     while (tx_semaphore_get(&self->gyro_data_ready_sem_, TX_NO_WAIT) == TX_SUCCESS)
     {
-        ++self->telemetry_.gyro_ready_drained;
+        continue;
     }
 
     if (!bsp::dwt::initialized())
@@ -193,11 +160,14 @@ void service::imu_thread_entry(ULONG arg)
 
     for (;;)
     {
-        self->wait_for_gyro_data_ready();
-        self->imu_loop_monitor_.begin();
+        tx_semaphore_get(&self->gyro_data_ready_sem_, TX_WAIT_FOREVER);
+        while (tx_semaphore_get(&self->gyro_data_ready_sem_, TX_NO_WAIT) == TX_SUCCESS)
+        {
+            continue;
+        }
         if (!self->imu_.test.init_err)
         {
-            self->telemetry_.read_ok = self->imu_.read(reading);
+            self->imu_.read(reading);
             if (self->cfg_.imu_offset_x != 0.0f)
             {
                 reading.accel.x += self->cfg_.imu_offset_x * reading.gyro.z * reading.gyro.z;
@@ -206,28 +176,11 @@ void service::imu_thread_entry(ULONG arg)
             ekf.update_kalman(reading.gyro.x, reading.gyro.y, reading.gyro.z,
                               reading.accel.x, reading.accel.y, reading.accel.z,
                               dt);
-            update_dt_telemetry(self->telemetry_, dt);
-            self->telemetry_.solved = ekf.UpdateCount > 0U;
-            self->telemetry_.update_count = static_cast<uint32_t>(ekf.UpdateCount);
-            self->telemetry_.temperature = reading.temperature;
-            self->telemetry_.accel_norm = vector_norm(reading.accel.x, reading.accel.y, reading.accel.z);
-            self->telemetry_.gyro_norm = vector_norm(reading.gyro.x, reading.gyro.y, reading.gyro.z);
-            std::memcpy(self->telemetry_.quaternion, ekf.q, sizeof(ekf.q));
-            self->telemetry_.yaw = ekf.yaw;
-            self->telemetry_.pitch = ekf.pitch;
-            self->telemetry_.roll = ekf.roll;
-            self->telemetry_.total_yaw = ekf.total_yaw;
         }
 
         tx_semaphore_put(&self->heartbeat_sem_);
         self->fill_msg(msg, ekf, reading);
         msg::publish(self->ahrs_topic_, msg);
-        self->imu_loop_monitor_.end();
-        const auto& loop_stats = self->imu_loop_monitor_.stats();
-        self->telemetry_.loop_runtime_us = loop_stats.last_us;
-        self->telemetry_.loop_runtime_max_us = loop_stats.max_us;
-        self->telemetry_.loop_runtime_avg_us = loop_stats.average_us();
-        self->telemetry_.loop_runtime_overruns = loop_stats.overrun_count;
     }
 }
 
