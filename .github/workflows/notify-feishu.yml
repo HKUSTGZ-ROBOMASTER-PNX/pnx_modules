@@ -1,0 +1,336 @@
+name: Notify Feishu on Push
+
+on:
+  # 只监听 main 分支的 push
+  push:
+    branches:
+      - main
+
+  # 保留手动测试入口
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    # 手动测试时执行；
+    # 普通 push 时，忽略删除分支事件
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.deleted == false &&
+          github.event.head_commit != null
+        )
+      }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Send compact commit card to Feishu
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          SERVER_URL: ${{ github.server_url }}
+
+        shell: bash
+
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+
+          MAX_VISIBLE_COMMITS = 3
+
+
+          def first_line(message: str) -> str:
+              """取 commit message 的第一行。"""
+              for line in message.splitlines():
+                  line = line.strip()
+
+                  if line:
+                      return line
+
+              return "(no commit message)"
+
+
+          def escape_markdown(text: str) -> str:
+              """转义可能破坏 Markdown 链接标题的字符。"""
+              return (
+                  text
+                  .replace("\\", "\\\\")
+                  .replace("[", "\\[")
+                  .replace("]", "\\]")
+              )
+
+
+          def commit_markdown(
+              commit: dict,
+              repository: str,
+              server_url: str,
+          ) -> str:
+              """生成一行可点击的 commit 信息。"""
+              commit_id = commit.get("id", "")
+              short_sha = commit_id[:7] or "unknown"
+
+              message = first_line(
+                  commit.get("message", "")
+              )
+
+              commit_url = (
+                  commit.get("url")
+                  or (
+                      f"{server_url}/{repository}"
+                      f"/commit/{commit_id}"
+                  )
+              )
+
+              label = escape_markdown(
+                  f"{short_sha}  {message}"
+              )
+
+              return f"[{label}]({commit_url})"
+
+
+          webhook = os.environ.get(
+              "FEISHU_WEBHOOK",
+              "",
+          ).strip()
+
+          if not webhook:
+              raise RuntimeError(
+                  "FEISHU_WEBHOOK is empty. "
+                  "Please check the repository Actions secret."
+              )
+
+          with open(
+              os.environ["GITHUB_EVENT_PATH"],
+              "r",
+              encoding="utf-8",
+          ) as event_file:
+              event = json.load(event_file)
+
+          event_name = os.environ["EVENT_NAME"]
+          repository = os.environ["REPOSITORY"]
+          repository_name = repository.rsplit("/", 1)[-1]
+          branch = os.environ["BRANCH"]
+          actor = os.environ["ACTOR"]
+          server_url = os.environ["SERVER_URL"]
+
+          card_elements = []
+
+          if event_name == "workflow_dispatch":
+              # 手动测试消息
+              card_elements.append({
+                  "tag": "markdown",
+                  "content": (
+                      f"**手动测试** · "
+                      f"{escape_markdown(actor)}"
+                  ),
+              })
+
+          else:
+              commits = event.get("commits") or []
+
+              # 特殊 push 没有 commits 数组时，
+              # 回退到 head_commit
+              if not commits:
+                  head_commit = event.get("head_commit")
+
+                  if head_commit:
+                      commits = [head_commit]
+
+              commit_count = len(commits)
+              commit_word = (
+                  "commit"
+                  if commit_count == 1
+                  else "commits"
+              )
+
+              # main · Aeskyrr17 · 4 commits
+              card_elements.append({
+                  "tag": "markdown",
+                  "content": (
+                      f"**{escape_markdown(branch)}**"
+                      f" · {escape_markdown(actor)}"
+                      f" · **{commit_count} {commit_word}**"
+                  ),
+              })
+
+              visible_commits = commits[
+                  :MAX_VISIBLE_COMMITS
+              ]
+
+              hidden_commits = commits[
+                  MAX_VISIBLE_COMMITS:
+              ]
+
+              # 前三个 commit 直接展示
+              visible_content = "\n".join(
+                  commit_markdown(
+                      commit,
+                      repository,
+                      server_url,
+                  )
+                  for commit in visible_commits
+              )
+
+              if visible_content:
+                  card_elements.append({
+                      "tag": "markdown",
+                      "content": visible_content,
+                  })
+
+              # 第四个开始默认折叠
+              if hidden_commits:
+                  hidden_content = "\n".join(
+                      commit_markdown(
+                          commit,
+                          repository,
+                          server_url,
+                      )
+                      for commit in hidden_commits
+                  )
+
+                  card_elements.append({
+                      "tag": "collapsible_panel",
+                      "expanded": False,
+
+                      "header": {
+                          "title": {
+                              "tag": "plain_text",
+                              "content": (
+                                  f"▸ 展开其余 "
+                                  f"{len(hidden_commits)} "
+                                  f"个 commit"
+                              ),
+                          },
+
+                          "vertical_align": "center",
+                          "padding": "4px 0px 4px 0px",
+                      },
+
+                      "padding": "4px 0px 0px 0px",
+
+                      "elements": [
+                          {
+                              "tag": "markdown",
+                              "content": hidden_content,
+                          }
+                      ],
+                  })
+
+          card = {
+              "schema": "2.0",
+
+              "config": {
+                  "wide_screen_mode": True,
+              },
+
+              "header": {
+                  "template": "blue",
+
+                  "title": {
+                      "tag": "plain_text",
+                      "content": (
+                          f"New Commits · "
+                          f"{repository_name}"
+                      ),
+                  },
+              },
+
+              "body": {
+                  "elements": card_elements,
+              },
+          }
+
+          payload = {
+              "msg_type": "interactive",
+              "card": card,
+          }
+
+          request = urllib.request.Request(
+              webhook,
+
+              data=json.dumps(
+                  payload,
+                  ensure_ascii=False,
+              ).encode("utf-8"),
+
+              headers={
+                  "Content-Type": (
+                      "application/json; charset=utf-8"
+                  ),
+                  "User-Agent": (
+                      "GitHub-Actions-Feishu-Notifier"
+                  ),
+              },
+
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=15,
+              ) as response:
+                  response_body = (
+                      response
+                      .read()
+                      .decode("utf-8")
+                  )
+
+          except urllib.error.HTTPError as error:
+              error_body = error.read().decode(
+                  "utf-8",
+                  errors="replace",
+              )
+
+              raise RuntimeError(
+                  f"Feishu returned HTTP "
+                  f"{error.code}: {error_body}"
+              ) from error
+
+          print(f"Feishu response: {response_body}")
+
+          try:
+              response_data = json.loads(
+                  response_body
+              )
+
+          except json.JSONDecodeError as error:
+              raise RuntimeError(
+                  "Feishu returned a non-JSON response: "
+                  f"{response_body}"
+              ) from error
+
+          code = response_data.get("code")
+          status_code = response_data.get(
+              "StatusCode"
+          )
+
+          if code not in (None, 0):
+              raise RuntimeError(
+                  f"Feishu returned error code "
+                  f"{code}: {response_body}"
+              )
+
+          if status_code not in (None, 0):
+              raise RuntimeError(
+                  f"Feishu returned StatusCode "
+                  f"{status_code}: {response_body}"
+              )
+
+          print(
+              "Feishu notification sent successfully."
+          )
+          PY
