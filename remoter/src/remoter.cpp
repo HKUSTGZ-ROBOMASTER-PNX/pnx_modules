@@ -23,17 +23,23 @@ bool source_online(const source_cache& source, ULONG now, ULONG timeout_ticks)
 source choose_source(source active,
                      const source_cache& dr16,
                      const source_cache& vt03,
+                     const source_cache& ps2,
                      ULONG now,
                      ULONG timeout_ticks)
 {
     const bool dr16_online = source_online(dr16, now, timeout_ticks);
     const bool vt03_online = source_online(vt03, now, timeout_ticks);
+    const bool ps2_online = source_online(ps2, now, timeout_ticks);
 
     if (active == source::dr16 && dr16_online)
     {
         return active;
     }
     if (active == source::vt03 && vt03_online)
+    {
+        return active;
+    }
+    if (active == source::ps2 && ps2_online)
     {
         return active;
     }
@@ -44,6 +50,10 @@ source choose_source(source active,
     if (vt03_online)
     {
         return source::vt03;
+    }
+    if (ps2_online)
+    {
+        return source::ps2;
     }
     return source::none;
 }
@@ -66,7 +76,8 @@ bool service::create_resources()
 
     dr16_sub_ = msg::subscribe<dr16_state>();
     vt03_sub_ = msg::subscribe<vt03_state>();
-    if (!dr16_sub_.valid() || !vt03_sub_.valid())
+    ps2_sub_ = msg::subscribe<ps2_state>();
+    if (!dr16_sub_.valid() || !vt03_sub_.valid() || !ps2_sub_.valid())
     {
         return false;
     }
@@ -95,17 +106,23 @@ bool service::init(const config& cfg)
     }
 
     bool any_source = false;
-    if (::config::feature::has_remoter && !dr16::instance().init(cfg_.dr16))
+    if (::config::feature::enable_dr16 && !dr16::instance().init(cfg_.dr16))
     {
         return false;
     }
-    any_source = any_source || ::config::feature::has_remoter;
+    any_source = any_source || ::config::feature::enable_dr16;
 
-    if (::config::feature::has_vt03 && !vt03::instance().init(cfg_.vt03))
+    if (::config::feature::enable_vt03 && !vt03::instance().init(cfg_.vt03))
     {
         return false;
     }
-    any_source = any_source || ::config::feature::has_vt03;
+    any_source = any_source || ::config::feature::enable_vt03;
+
+    if (::config::feature::enable_ps2 && !ps2::instance().init(cfg_.ps2))
+    {
+        return false;
+    }
+    any_source = any_source || ::config::feature::enable_ps2;
 
     if (!any_source || !create_resources())
     {
@@ -126,6 +143,7 @@ void service::merge_thread_entry(ULONG arg)
 
     source_cache dr16{};
     source_cache vt03{};
+    source_cache ps2{};
     state output{};
     source active = source::none;
 
@@ -147,8 +165,17 @@ void service::merge_thread_entry(ULONG arg)
             vt03.seen = true;
         }
 
+        ps2_state ps2_msg{};
+        if (msg::read(self->ps2_sub_, ps2_msg) == types::status::ok)
+        {
+            ps2.data = ps2_msg.data;
+            ps2.tick = tx_time_get();
+            ps2.seen = true;
+        }
+
         const ULONG now = tx_time_get();
-        active = choose_source(active, dr16, vt03, now, self->cfg_.offline_timeout_ticks);
+        active = choose_source(active, dr16, vt03, ps2, now,
+                               self->cfg_.offline_timeout_ticks);
 
         switch (active)
         {
@@ -159,6 +186,11 @@ void service::merge_thread_entry(ULONG arg)
             break;
         case source::vt03:
             output = vt03.data;
+            output.active_source = active;
+            output.offline = false;
+            break;
+        case source::ps2:
+            output = ps2.data;
             output.active_source = active;
             output.offline = false;
             break;
