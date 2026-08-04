@@ -103,6 +103,8 @@ void vt03::fill_raw(state& raw, const vt03_frame& frame)
                  static_cast<float>(rc_ch_offset_max);
     raw.left_y = (static_cast<float>(frame.ch_2) - static_cast<float>(rc_ch_value_offset)) /
                  static_cast<float>(rc_ch_offset_max);
+    raw.wheel = (static_cast<float>(frame.wheel) - static_cast<float>(rc_ch_value_offset)) /
+                static_cast<float>(rc_ch_offset_max);
     raw.mouse_x = static_cast<float>(frame.mouse_x);
     raw.mouse_y = static_cast<float>(frame.mouse_y);
     raw.mouse_z = static_cast<float>(frame.mouse_z);
@@ -177,6 +179,7 @@ void vt03::vt03_thread_entry(ULONG arg)
             output.right_y = raw.right_y;
             output.left_x = raw.left_x;
             output.left_y = raw.left_y;
+            output.wheel = raw.wheel;
             output.mouse_x = raw.mouse_x;
             output.mouse_y = raw.mouse_y;
             output.mouse_z = raw.mouse_z;

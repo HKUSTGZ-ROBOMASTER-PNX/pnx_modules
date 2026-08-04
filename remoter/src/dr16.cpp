@@ -149,6 +149,8 @@ void dr16::dr16_thread_entry(ULONG arg)
                        static_cast<float>(rc_ch_offset_max);
         msg.left_y = (static_cast<float>(frame.ch_3) - static_cast<float>(rc_ch_value_offset)) /
                        static_cast<float>(rc_ch_offset_max);
+        msg.wheel = (static_cast<float>(frame.wheel) - static_cast<float>(rc_ch_value_offset)) /
+                    static_cast<float>(rc_ch_offset_max);
 
         msg.mouse_x = static_cast<float>(frame.mouse_x);
         msg.mouse_y = static_cast<float>(frame.mouse_y);

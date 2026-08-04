@@ -129,6 +129,7 @@ void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzo
     output.right_y = -normalize_axis(frame.right_y, axis_y_center);
     apply_stick_deadzone(output.left_x, output.left_y, deadzone);
     apply_stick_deadzone(output.right_x, output.right_y, deadzone);
+    output.wheel = 0.0f;
 
     message.data = output;
     message.raw_left_x = frame.left_x;
