@@ -87,6 +87,7 @@ struct state
     float right_y = 0.0f;
     float left_x = 0.0f;
     float left_y = 0.0f;
+    float wheel = 0.0f;
     float mouse_x = 0.0f;
     float mouse_y = 0.0f;
     float mouse_z = 0.0f;
@@ -182,7 +183,8 @@ struct dr16_frame
         uint16_t V : 1;
         uint16_t B : 1;
     } key;
-    uint16_t reserve : 16;
+    uint16_t wheel : 11;
+    uint16_t reserve : 5;
 } __attribute__((packed));
 
 struct vt03_frame

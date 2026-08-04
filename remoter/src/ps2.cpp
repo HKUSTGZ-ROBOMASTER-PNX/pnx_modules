@@ -68,6 +68,7 @@ void set_connected(ps2_state& raw, const ps2_uart_frame& frame, float deadzone, 
     output.left_y = -apply_deadzone(normalize_axis(frame.left_y), deadzone);
     output.right_x = apply_deadzone(normalize_axis(frame.right_x), deadzone);
     output.right_y = -apply_deadzone(normalize_axis(frame.right_y), deadzone);
+    output.wheel = 0.0f;
 
     output.key.W = is_held(current_buttons, ps2_button::up);
     output.key.S = is_held(current_buttons, ps2_button::down);
