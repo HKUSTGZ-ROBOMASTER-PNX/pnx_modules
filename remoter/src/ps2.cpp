@@ -2,6 +2,7 @@
 
 #include "memory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -11,49 +12,98 @@ namespace
 {
 
 constexpr std::size_t ps2_dma_buffer_size = 32;
+constexpr std::size_t ps2_frame_size = 8;
 constexpr uint8_t frame_header = 0x0D;
 constexpr uint8_t frame_tail = 0x0A;
 constexpr uint8_t remote_disconnected_byte = 0xAB;
-constexpr float axis_center = 127.5f;
+constexpr uint8_t axis_x_center = 127;
+constexpr uint8_t axis_y_center = 128;
 
 alignas(32) uint8_t rx_buffer_storage[ps2_dma_buffer_size] RAM_D1_BSS{};
 
-float normalize_axis(uint8_t raw)
+struct ps2_uart_frame
 {
-    return (static_cast<float>(raw) - axis_center) / axis_center;
+    uint8_t header;
+    uint8_t button_high;
+    uint8_t button_low;
+    uint8_t left_y;
+    uint8_t left_x;
+    uint8_t right_y;
+    uint8_t right_x;
+    uint8_t tail;
+};
+
+static_assert(sizeof(ps2_uart_frame) == ps2_frame_size);
+
+float normalize_axis(uint8_t raw, uint8_t center)
+{
+    if (raw >= center)
+    {
+        return static_cast<float>(raw - center) /
+               static_cast<float>(UINT8_MAX - center);
+    }
+    return -static_cast<float>(center - raw) / static_cast<float>(center);
 }
 
-float apply_deadzone(float value, float deadzone)
+void apply_stick_deadzone(float& x, float& y, float deadzone)
 {
-    const float absolute = std::fabs(value);
-    if (absolute <= deadzone)
+    const float magnitude = std::max(std::fabs(x), std::fabs(y));
+    if (magnitude <= deadzone)
     {
-        return 0.0f;
+        x = 0.0f;
+        y = 0.0f;
+        return;
     }
 
-    const float magnitude = (absolute - deadzone) / (1.0f - deadzone);
-    return std::copysign(magnitude, value);
+    const float scaled_magnitude = (magnitude - deadzone) / (1.0f - deadzone);
+    const float scale = scaled_magnitude / magnitude;
+    x *= scale;
+    y *= scale;
 }
 
-void set_disconnected(ps2_state& raw, ps2_link_state link, ULONG now)
+std::size_t retain_frame_suffix(uint8_t* bytes, std::size_t size)
 {
-    raw.data = {};
-    raw.data.offline = true;
-    raw.data.active_source = source::ps2;
-    raw.link = link;
-    raw.buttons = 0;
-    raw.pressed = 0;
-    raw.released = 0;
-    raw.left_x = 128;
-    raw.left_y = 128;
-    raw.right_x = 128;
-    raw.right_y = 128;
-    raw.last_update_tick = static_cast<uint32_t>(now);
+    for (std::size_t i = size; i > 1U; --i)
+    {
+        const std::size_t index = i - 1U;
+        if (bytes[index] == frame_header)
+        {
+            const std::size_t retained = size - index;
+            std::memmove(bytes, bytes + index, retained);
+            return retained;
+        }
+    }
+    return 0;
 }
 
-void set_connected(ps2_state& raw, const ps2_uart_frame& frame, float deadzone, ULONG now)
+void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
+                      bool signal_received)
 {
-    const uint16_t previous_buttons = raw.buttons;
+    const uint16_t previous_buttons = message.data.ps2_buttons;
+    const uint32_t previous_event_count = message.data.ps2_event_count;
+    if (signal_received)
+    {
+        ++message.signal_count;
+        message.last_signal_tick = static_cast<uint32_t>(now);
+    }
+
+    message.data = {};
+    message.data.offline = true;
+    message.data.active_source = source::ps2;
+    message.data.ps2_link = link;
+    message.data.ps2_released = previous_buttons;
+    message.data.ps2_event_count =
+        previous_event_count + (previous_buttons != 0U ? 1U : 0U);
+    message.raw_left_x = axis_x_center;
+    message.raw_left_y = axis_y_center;
+    message.raw_right_x = axis_x_center;
+    message.raw_right_y = axis_y_center;
+}
+
+void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzone,
+                   ULONG now)
+{
+    const uint16_t previous_buttons = message.data.ps2_buttons;
     const uint16_t current_buttons =
         (static_cast<uint16_t>(frame.button_high) << 8U) |
         static_cast<uint16_t>(frame.button_low);
@@ -61,33 +111,33 @@ void set_connected(ps2_state& raw, const ps2_uart_frame& frame, float deadzone, 
     state output{};
     output.offline = false;
     output.active_source = source::ps2;
-    output.last_left_sw = raw.data.left_sw;
-    output.last_right_sw = raw.data.right_sw;
-    output.last_key = raw.data.key;
-    output.left_x = apply_deadzone(normalize_axis(frame.left_x), deadzone);
-    output.left_y = -apply_deadzone(normalize_axis(frame.left_y), deadzone);
-    output.right_x = apply_deadzone(normalize_axis(frame.right_x), deadzone);
-    output.right_y = -apply_deadzone(normalize_axis(frame.right_y), deadzone);
+    output.ps2_link = ps2_link_state::connected;
+    output.ps2_buttons = current_buttons;
+    output.ps2_pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
+    output.ps2_released = previous_buttons & static_cast<uint16_t>(~current_buttons);
+    output.ps2_event_count = message.data.ps2_event_count;
+    if (output.ps2_pressed != 0U || output.ps2_released != 0U)
+    {
+        ++output.ps2_event_count;
+    }
+    output.last_left_sw = message.data.left_sw;
+    output.last_right_sw = message.data.right_sw;
+    output.last_key = message.data.key;
+    output.left_x = normalize_axis(frame.left_x, axis_x_center);
+    output.left_y = -normalize_axis(frame.left_y, axis_y_center);
+    output.right_x = normalize_axis(frame.right_x, axis_x_center);
+    output.right_y = -normalize_axis(frame.right_y, axis_y_center);
+    apply_stick_deadzone(output.left_x, output.left_y, deadzone);
+    apply_stick_deadzone(output.right_x, output.right_y, deadzone);
 
-    output.key.W = is_held(current_buttons, ps2_button::up);
-    output.key.S = is_held(current_buttons, ps2_button::down);
-    output.key.A = is_held(current_buttons, ps2_button::left);
-    output.key.D = is_held(current_buttons, ps2_button::right);
-    output.fn_1 = is_held(current_buttons, ps2_button::l1);
-    output.fn_2 = is_held(current_buttons, ps2_button::r1);
-    output.button = is_held(current_buttons, ps2_button::cross);
-    output.pause = is_held(current_buttons, ps2_button::start);
-
-    raw.data = output;
-    raw.link = ps2_link_state::connected;
-    raw.buttons = current_buttons;
-    raw.pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
-    raw.released = previous_buttons & static_cast<uint16_t>(~current_buttons);
-    raw.left_x = frame.left_x;
-    raw.left_y = frame.left_y;
-    raw.right_x = frame.right_x;
-    raw.right_y = frame.right_y;
-    raw.last_update_tick = static_cast<uint32_t>(now);
+    message.data = output;
+    message.raw_left_x = frame.left_x;
+    message.raw_left_y = frame.left_y;
+    message.raw_right_x = frame.right_x;
+    message.raw_right_y = frame.right_y;
+    ++message.frame_count;
+    ++message.signal_count;
+    message.last_signal_tick = static_cast<uint32_t>(now);
 }
 
 } // namespace
@@ -207,7 +257,7 @@ void ps2::ps2_thread_entry(ULONG arg)
     }
 
     ps2_state raw_msg{};
-    set_disconnected(raw_msg, ps2_link_state::receiver_offline, tx_time_get());
+    set_disconnected(raw_msg, ps2_link_state::receiver_offline, tx_time_get(), false);
     msg::publish(self->remoter_topic_, raw_msg);
 
     ps2_uart_frame candidate{};
@@ -260,7 +310,7 @@ void ps2::ps2_thread_entry(ULONG arg)
                 }
                 else if (byte == remote_disconnected_byte)
                 {
-                    set_disconnected(raw_msg, ps2_link_state::remote_disconnected, now);
+                    set_disconnected(raw_msg, ps2_link_state::remote_disconnected, now, true);
                     last_signal_tick = now;
                     msg::publish(self->remoter_topic_, raw_msg);
                 }
@@ -281,21 +331,20 @@ void ps2::ps2_thread_entry(ULONG arg)
                 msg::publish(self->remoter_topic_, raw_msg);
                 candidate_size = 0;
             }
-            else if (byte == frame_header)
-            {
-                candidate_bytes[0] = byte;
-                candidate_size = 1;
-            }
             else
             {
-                candidate_size = 0;
+                candidate_size = retain_frame_suffix(candidate_bytes, candidate_size);
+                if (candidate_size != 0U)
+                {
+                    candidate_tick = now;
+                }
             }
         }
 
         if ((now - last_signal_tick) > self->cfg_.receiver_offline_timeout_ticks &&
-            raw_msg.link != ps2_link_state::receiver_offline)
+            raw_msg.data.ps2_link != ps2_link_state::receiver_offline)
         {
-            set_disconnected(raw_msg, ps2_link_state::receiver_offline, now);
+            set_disconnected(raw_msg, ps2_link_state::receiver_offline, now, false);
             msg::publish(self->remoter_topic_, raw_msg);
         }
     }

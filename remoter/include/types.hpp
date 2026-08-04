@@ -33,17 +33,14 @@ enum class ps2_button : uint16_t
     cross = 0x4000,
     circle = 0x2000,
     triangle = 0x1000,
-
     r1 = 0x0800,
     l1 = 0x0400,
     r2 = 0x0200,
     l2 = 0x0100,
-
     left = 0x0080,
     down = 0x0040,
     right = 0x0020,
     up = 0x0010,
-
     start = 0x0008,
     r3 = 0x0004,
     l3 = 0x0002,
@@ -79,6 +76,11 @@ struct state
 {
     bool offline = true;
     source active_source = source::none;
+    ps2_link_state ps2_link = ps2_link_state::receiver_offline;
+    uint16_t ps2_buttons = 0;
+    uint16_t ps2_pressed = 0;
+    uint16_t ps2_released = 0;
+    uint32_t ps2_event_count = 0;
     sw_state left_sw = sw_state::low;
     sw_state right_sw = sw_state::low;
     sw_state last_left_sw = sw_state::low;
@@ -114,18 +116,15 @@ struct vt03_state
 struct ps2_state
 {
     state data{};
-    ps2_link_state link = ps2_link_state::receiver_offline;
 
-    uint16_t buttons = 0;
-    uint16_t pressed = 0;
-    uint16_t released = 0;
+    uint8_t raw_left_x = 127;
+    uint8_t raw_left_y = 128;
+    uint8_t raw_right_x = 127;
+    uint8_t raw_right_y = 128;
 
-    uint8_t left_x = 128;
-    uint8_t left_y = 128;
-    uint8_t right_x = 128;
-    uint8_t right_y = 128;
-
-    uint32_t last_update_tick = 0;
+    uint32_t frame_count = 0;
+    uint32_t signal_count = 0;
+    uint32_t last_signal_tick = 0;
 };
 
 inline sw_state map_switch(uint8_t raw)
@@ -147,7 +146,6 @@ inline constexpr uint16_t rc_ch_value_offset = 1024;
 inline constexpr uint16_t rc_ch_offset_max = 660;
 inline constexpr uint8_t dr16_frame_size = 18;
 inline constexpr uint8_t vt03_frame_size = 21;
-inline constexpr uint8_t ps2_frame_size = 8;
 
 struct dr16_frame
 {
@@ -227,19 +225,5 @@ struct vt03_frame
     } key;
     uint16_t crc16;
 } __attribute__((packed));
-
-struct ps2_uart_frame
-{
-    uint8_t header;
-    uint8_t button_high;
-    uint8_t button_low;
-    uint8_t left_y;
-    uint8_t left_x;
-    uint8_t right_y;
-    uint8_t right_x;
-    uint8_t tail;
-};
-
-static_assert(sizeof(ps2_uart_frame) == ps2_frame_size);
 
 } // namespace remoter

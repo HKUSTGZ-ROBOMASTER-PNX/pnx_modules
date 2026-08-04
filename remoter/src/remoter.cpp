@@ -146,31 +146,38 @@ void service::merge_thread_entry(ULONG arg)
     source_cache ps2{};
     state output{};
     source active = source::none;
+    uint32_t update_count = 0;
 
     for (;;)
     {
-        dr16_state dr16_msg{};
-        if (msg::read(self->dr16_sub_, dr16_msg) == types::status::ok)
         {
-            dr16.data = dr16_msg.data;
-            dr16.tick = tx_time_get();
-            dr16.seen = true;
+            dr16_state dr16_msg{};
+            if (msg::read(self->dr16_sub_, dr16_msg) == types::status::ok)
+            {
+                dr16.data = dr16_msg.data;
+                dr16.tick = tx_time_get();
+                dr16.seen = true;
+            }
         }
 
-        vt03_state vt03_msg{};
-        if (msg::read(self->vt03_sub_, vt03_msg) == types::status::ok)
         {
-            vt03.data = vt03_msg.data;
-            vt03.tick = tx_time_get();
-            vt03.seen = true;
+            vt03_state vt03_msg{};
+            if (msg::read(self->vt03_sub_, vt03_msg) == types::status::ok)
+            {
+                vt03.data = vt03_msg.data;
+                vt03.tick = tx_time_get();
+                vt03.seen = true;
+            }
         }
 
-        ps2_state ps2_msg{};
-        if (msg::read(self->ps2_sub_, ps2_msg) == types::status::ok)
         {
-            ps2.data = ps2_msg.data;
-            ps2.tick = tx_time_get();
-            ps2.seen = true;
+            ps2_state ps2_msg{};
+            if (msg::read(self->ps2_sub_, ps2_msg) == types::status::ok)
+            {
+                ps2.data = ps2_msg.data;
+                ps2.tick = tx_time_get();
+                ps2.seen = true;
+            }
         }
 
         const ULONG now = tx_time_get();
@@ -195,12 +202,19 @@ void service::merge_thread_entry(ULONG arg)
             output.offline = false;
             break;
         default:
+            output = {};
             output.offline = true;
             output.active_source = source::none;
             break;
         }
 
-        ++output.update_count;
+        output.ps2_link = ps2.data.ps2_link;
+        output.ps2_buttons = ps2.data.ps2_buttons;
+        output.ps2_pressed = ps2.data.ps2_pressed;
+        output.ps2_released = ps2.data.ps2_released;
+        output.ps2_event_count = ps2.data.ps2_event_count;
+
+        output.update_count = ++update_count;
         msg::publish(self->remoter_topic_, output);
         output.last_left_sw = output.left_sw;
         output.last_right_sw = output.right_sw;
