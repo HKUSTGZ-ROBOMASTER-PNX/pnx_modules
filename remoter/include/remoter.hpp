@@ -118,7 +118,8 @@ private:
     ps2_config cfg_{};
     TX_THREAD thread_{};
     TX_SEMAPHORE rx_sem_{};
-    alignas(8) std::uint8_t stack_[768]{};
+    // Connected F407 input overflowed the 768 B PS2 receive stack.
+    alignas(8) std::uint8_t stack_[1536]{};
 
     std::uint8_t* rx_buffer_ = nullptr;
     std::uint8_t stream_buffer_[stream_buffer_size]{};
