@@ -60,7 +60,8 @@ private:
     dr16_config cfg_{};
     TX_THREAD thread_{};
     TX_SEMAPHORE rx_sem_{};
-    alignas(8) std::uint8_t stack_[768]{};
+    // F407 DR16 receive and publish paths leave insufficient headroom at 768 B.
+    alignas(8) std::uint8_t stack_[1536]{};
 
     std::uint8_t* rx_buffer_ = nullptr;
     alignas(4) std::uint8_t frame_buffers_[2][dr16_frame_size]{};
@@ -141,7 +142,8 @@ private:
 
     config cfg_{};
     TX_THREAD thread_{};
-    alignas(8) std::uint8_t stack_[768]{};
+    // F407 source merging can overflow 768 B and corrupt the ThreadX control block.
+    alignas(8) std::uint8_t stack_[1536]{};
     msg::topic* remoter_topic_ = nullptr;
     msg::subscriber dr16_sub_{};
     msg::subscriber vt03_sub_{};
