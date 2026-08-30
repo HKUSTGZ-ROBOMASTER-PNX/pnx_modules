@@ -1,5 +1,6 @@
 # pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 /* 通信协议内容: 常规链路由裁判系统服务器和主控模块进行数据转发，从电源管理模块的User串口收发数据 */
@@ -423,3 +424,22 @@ enum UnpackState
     STEP_LENGTH_SEQ,
     STEP_DATA_CRC16,
 };
+
+namespace referee::protocol
+{
+
+inline constexpr std::size_t max_data_length = 200;
+inline constexpr std::size_t max_robot_interaction_payload =
+    max_data_length - sizeof(RoboInteractData_t);
+
+} // namespace referee::protocol
+
+static_assert(sizeof(FrameHeader) == 5);
+static_assert(sizeof(GameStatus_t) == 11);
+static_assert(sizeof(GameRobotStatus_t) == 13);
+static_assert(sizeof(PowerHeatData_t) == 14);
+static_assert(sizeof(Buff_t) == 8);
+static_assert(sizeof(RobotHurt_t) == 1);
+static_assert(sizeof(DartInfo_t) == 3);
+static_assert(sizeof(DartClientCmd_t) == 6);
+static_assert(sizeof(RoboInteractData_t) == 6);
