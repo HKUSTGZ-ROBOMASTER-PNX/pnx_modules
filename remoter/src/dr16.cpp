@@ -1,5 +1,6 @@
 #include "remoter.hpp"
 
+#include "bsp_dma.hpp"
 #include "memory.h"
 
 #include <cstring>
@@ -10,8 +11,7 @@ namespace remoter
 namespace
 {
 
-constexpr size_t dma_buffer_size = 32;
-uint8_t rx_buffer_storage[dma_buffer_size] RAM_D1_BSS{};
+bsp::dma::buffer<dr16_frame_size> rx_buffer_storage BSP_DMA_BUFFER{};
 
 } // namespace
 
@@ -34,18 +34,18 @@ bool dr16::create_resources()
         return false;
     }
 
-    std::memset(rx_buffer_storage, 0, sizeof(rx_buffer_storage));
+    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
     std::memset(frame_buffers_, 0, sizeof(frame_buffers_));
     ready_frame_idx_ = 0;
     write_frame_idx_ = 0;
     frame_ready_ = false;
-    rx_buffer_ = rx_buffer_storage;
+    rx_buffer_ = rx_buffer_storage.data();
 
     if (bsp::usart::init(cfg_.uart_port, bsp::usart::mode::dma) != types::status::ok)
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_, dr16_frame_size, dr16_rx_callback,
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), dr16_rx_callback,
                                      this, nullptr) != types::status::ok)
     {
         return false;
@@ -116,7 +116,7 @@ void dr16::dr16_thread_entry(ULONG arg)
             bsp::usart::restart_rx(self->cfg_.uart_port);
             msg::publish(self->remoter_topic_, raw_msg);
             tx_thread_sleep(3);
-            bsp::usart::start_rx_to_idle(self->cfg_.uart_port, self->rx_buffer_, dr16_frame_size,
+            bsp::usart::start_rx_to_idle(self->cfg_.uart_port, rx_buffer_storage.view(),
                                          dr16_rx_callback, self, nullptr);
         }
 

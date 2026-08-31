@@ -1,5 +1,6 @@
 #include "referee.hpp"
 
+#include "bsp_dma.hpp"
 #include "crc.hpp"
 #include "memory.h"
 
@@ -12,7 +13,7 @@ namespace
 {
 
 constexpr std::size_t rx_buffer_size = 256;
-uint8_t rx_buffer_storage[rx_buffer_size] RAM_D1_BSS{};
+bsp::dma::buffer<rx_buffer_size> rx_buffer_storage BSP_DMA_BUFFER{};
 
 enum class decode_result : uint8_t
 {
@@ -184,14 +185,14 @@ bool service::create_resources()
         return false;
     }
 
-    std::memset(rx_buffer_storage, 0, sizeof(rx_buffer_storage));
-    rx_buffer_ = rx_buffer_storage;
+    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
+    rx_buffer_ = rx_buffer_storage.data();
 
     if (bsp::usart::init(cfg_.uart_port, bsp::usart::mode::dma) != types::status::ok)
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_, rx_buffer_size, referee_rx_callback,
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), referee_rx_callback,
                                      nullptr, nullptr) != types::status::ok)
     {
         return false;

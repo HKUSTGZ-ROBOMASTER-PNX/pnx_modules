@@ -1,5 +1,6 @@
 #include "remoter.hpp"
 
+#include "bsp_dma.hpp"
 #include "memory.h"
 
 #include <algorithm>
@@ -19,7 +20,7 @@ constexpr uint8_t remote_disconnected_byte = 0xAB;
 constexpr uint8_t axis_x_center = 127;
 constexpr uint8_t axis_y_center = 128;
 
-alignas(32) uint8_t rx_buffer_storage[ps2_dma_buffer_size] RAM_D1_BSS{};
+bsp::dma::buffer<ps2_dma_buffer_size> rx_buffer_storage BSP_DMA_BUFFER{};
 
 struct ps2_uart_frame
 {
@@ -162,9 +163,9 @@ bool ps2::create_resources()
         return false;
     }
 
-    std::memset(rx_buffer_storage, 0, sizeof(rx_buffer_storage));
+    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
     std::memset(stream_buffer_, 0, sizeof(stream_buffer_));
-    rx_buffer_ = rx_buffer_storage;
+    rx_buffer_ = rx_buffer_storage.data();
     stream_head_ = 0;
     stream_tail_ = 0;
     stream_overflow_ = false;
@@ -185,7 +186,7 @@ bool ps2::create_resources()
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_, ps2_dma_buffer_size,
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
                                      ps2_rx_callback, this, nullptr) != types::status::ok)
     {
         return false;

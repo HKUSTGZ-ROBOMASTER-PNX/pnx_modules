@@ -1,5 +1,6 @@
 #include "remoter.hpp"
 
+#include "bsp_dma.hpp"
 #include "memory.h"
 
 #include <cstring>
@@ -11,7 +12,7 @@ namespace
 {
 
 constexpr int lost_threshold = 100;
-uint8_t rx_buffer_storage[vt03_frame_size] RAM_D1_BSS{};
+bsp::dma::buffer<vt03_frame_size> rx_buffer_storage BSP_DMA_BUFFER{};
 
 bool update_online(bool got, uint32_t& lost_cnt)
 {
@@ -49,13 +50,13 @@ bool vt03::create_resources()
     {
         return false;
     }
-    std::memset(rx_buffer_storage, 0, sizeof(rx_buffer_storage));
+    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
     std::memset(frame_buffers_, 0, sizeof(frame_buffers_));
     ready_frame_idx_ = 0;
     write_frame_idx_ = 0;
     frame_ready_ = false;
-    rx_buffer_ = rx_buffer_storage;
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_, vt03_frame_size, vt03_rx_callback,
+    rx_buffer_ = rx_buffer_storage.data();
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), vt03_rx_callback,
                                      this, nullptr) != types::status::ok)
     {
         return false;
