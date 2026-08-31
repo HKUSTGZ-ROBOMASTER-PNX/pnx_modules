@@ -138,13 +138,9 @@ void service::fill_msg(message& msg, const quaternion_ekf& ekf, const imu::readi
     msg.accel[2] = reading.accel.z;
 }
 
-void service::gyro_data_ready_callback(void* user)
+void service::gyro_data_ready_callback()
 {
-    auto* self = static_cast<service*>(user);
-    if (self == nullptr)
-    {
-        return;
-    }
+    auto* self = this;
     ++self->telemetry_.gyro_ready_count;
     tx_semaphore_put(&self->gyro_data_ready_sem_);
 }
@@ -178,7 +174,8 @@ void service::imu_thread_entry(ULONG arg)
     self->imu_.test.init_err = true;
     self->imu_.test.calibrate_err = false;
     self->imu_.test.temp_ctrl_err = false;
-    self->imu_.set_gyro_data_ready_callback(gyro_data_ready_callback, self);
+    self->imu_.set_gyro_data_ready_callback(
+        imu::bmi088::data_ready_callback::bind<service, &service::gyro_data_ready_callback>(self));
 
     self->imu_.configure();
     self->telemetry_.imu_configured = true;

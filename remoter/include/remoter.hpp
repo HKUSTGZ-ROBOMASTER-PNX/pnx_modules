@@ -53,8 +53,7 @@ public:
 
 private:
     static void dr16_thread_entry(ULONG arg);
-    static void dr16_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                 void* user_data);
+    void dr16_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
 
     dr16_config cfg_{};
@@ -81,8 +80,7 @@ public:
 
 private:
     static void vt03_thread_entry(ULONG arg);
-    static void vt03_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                 void* user_data);
+    void vt03_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
     void fill_raw(state& raw, const vt03_frame& frame);
 
@@ -111,8 +109,7 @@ private:
     static constexpr std::size_t stream_buffer_size = 64;
 
     static void ps2_thread_entry(ULONG arg);
-    static void ps2_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                void* user_data);
+    void ps2_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
 
     ps2_config cfg_{};

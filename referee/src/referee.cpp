@@ -164,7 +164,7 @@ void service::push_rx(const uint8_t* data, uint16_t len)
     }
 }
 
-void service::referee_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame, void*)
+void service::referee_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
 {
     if (frame.data != nullptr && frame.len > 0)
     {
@@ -192,8 +192,9 @@ bool service::create_resources()
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), referee_rx_callback,
-                                     nullptr, nullptr) != types::status::ok)
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
+                                     bsp::usart::rx_callback::bind<&referee_rx_callback>(),
+                                     nullptr) != types::status::ok)
     {
         return false;
     }
@@ -322,10 +323,10 @@ void service::referee_thread_entry(ULONG arg)
                     }
 
                     const update_info update{command_id, true, result == decode_result::known};
-                    if (self->cfg_.on_update != nullptr)
+                    if (self->cfg_.on_update)
                     {
                         // Runs synchronously in the referee receive thread and must not block.
-                        self->cfg_.on_update(self->packets_, update, self->cfg_.update_context);
+                        self->cfg_.on_update(self->packets_, update);
                     }
                     state = STEP_HEADER_SOF;
                 }

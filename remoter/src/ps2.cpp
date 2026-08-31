@@ -187,7 +187,8 @@ bool ps2::create_resources()
         return false;
     }
     if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
-                                     ps2_rx_callback, this, nullptr) != types::status::ok)
+                                     bsp::usart::rx_callback::bind<ps2, &ps2::ps2_rx_callback>(this),
+                                     nullptr) != types::status::ok)
     {
         return false;
     }
@@ -228,26 +229,25 @@ bool ps2::init(const ps2_config& cfg)
     return true;
 }
 
-void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame, void* user_data)
+void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
 {
-    auto* self = static_cast<ps2*>(user_data);
-    if (self == nullptr || frame.data == nullptr || frame.len == 0U)
+    if (frame.data == nullptr || frame.len == 0U)
     {
         return;
     }
 
     for (std::size_t i = 0; i < frame.len; ++i)
     {
-        const std::size_t next = (self->stream_head_ + 1U) % stream_buffer_size;
-        if (next == self->stream_tail_)
+        const std::size_t next = (stream_head_ + 1U) % stream_buffer_size;
+        if (next == stream_tail_)
         {
-            self->stream_overflow_ = true;
+            stream_overflow_ = true;
             break;
         }
-        self->stream_buffer_[self->stream_head_] = frame.data[i];
-        self->stream_head_ = next;
+        stream_buffer_[stream_head_] = frame.data[i];
+        stream_head_ = next;
     }
-    tx_semaphore_put(&self->rx_sem_);
+    tx_semaphore_put(&rx_sem_);
 }
 
 void ps2::ps2_thread_entry(ULONG arg)

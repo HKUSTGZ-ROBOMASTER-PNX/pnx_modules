@@ -56,8 +56,9 @@ bool vt03::create_resources()
     write_frame_idx_ = 0;
     frame_ready_ = false;
     rx_buffer_ = rx_buffer_storage.data();
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), vt03_rx_callback,
-                                     this, nullptr) != types::status::ok)
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
+                                     bsp::usart::rx_callback::bind<vt03, &vt03::vt03_rx_callback>(this),
+                                     nullptr) != types::status::ok)
     {
         return false;
     }
@@ -118,17 +119,16 @@ void vt03::fill_raw(state& raw, const vt03_frame& frame)
     std::memcpy(&raw.key, &frame.key, sizeof(raw.key));
 }
 
-void vt03::vt03_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame, void* user_data)
+void vt03::vt03_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
 {
-    auto* self = static_cast<vt03*>(user_data);
-    if (self != nullptr && frame.data != nullptr && frame.len == vt03_frame_size)
+    if (frame.data != nullptr && frame.len == vt03_frame_size)
     {
-        const uint8_t frame_idx = self->write_frame_idx_;
-        std::memcpy(self->frame_buffers_[frame_idx], frame.data, vt03_frame_size);
-        self->ready_frame_idx_ = frame_idx;
-        self->write_frame_idx_ = static_cast<uint8_t>(frame_idx ^ 1U);
-        self->frame_ready_ = true;
-        tx_semaphore_put(&self->rx_sem_);
+        const uint8_t frame_idx = write_frame_idx_;
+        std::memcpy(frame_buffers_[frame_idx], frame.data, vt03_frame_size);
+        ready_frame_idx_ = frame_idx;
+        write_frame_idx_ = static_cast<uint8_t>(frame_idx ^ 1U);
+        frame_ready_ = true;
+        tx_semaphore_put(&rx_sem_);
     }
 }
 

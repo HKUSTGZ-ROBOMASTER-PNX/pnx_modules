@@ -45,8 +45,9 @@ bool dr16::create_resources()
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(), dr16_rx_callback,
-                                     this, nullptr) != types::status::ok)
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
+                                     bsp::usart::rx_callback::bind<dr16, &dr16::dr16_rx_callback>(this),
+                                     nullptr) != types::status::ok)
     {
         return false;
     }
@@ -81,17 +82,16 @@ bool dr16::init(const dr16_config& cfg)
     return true;
 }
 
-void dr16::dr16_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame, void* user_data)
+void dr16::dr16_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
 {
-    auto* self = static_cast<dr16*>(user_data);
-    if (self != nullptr && frame.data != nullptr && frame.len == dr16_frame_size)
+    if (frame.data != nullptr && frame.len == dr16_frame_size)
     {
-        const uint8_t frame_idx = self->write_frame_idx_;
-        std::memcpy(self->frame_buffers_[frame_idx], frame.data, dr16_frame_size);
-        self->ready_frame_idx_ = frame_idx;
-        self->write_frame_idx_ = static_cast<uint8_t>(frame_idx ^ 1U);
-        self->frame_ready_ = true;
-        tx_semaphore_put(&self->rx_sem_);
+        const uint8_t frame_idx = write_frame_idx_;
+        std::memcpy(frame_buffers_[frame_idx], frame.data, dr16_frame_size);
+        ready_frame_idx_ = frame_idx;
+        write_frame_idx_ = static_cast<uint8_t>(frame_idx ^ 1U);
+        frame_ready_ = true;
+        tx_semaphore_put(&rx_sem_);
     }
 }
 
@@ -117,7 +117,8 @@ void dr16::dr16_thread_entry(ULONG arg)
             msg::publish(self->remoter_topic_, raw_msg);
             tx_thread_sleep(3);
             bsp::usart::start_rx_to_idle(self->cfg_.uart_port, rx_buffer_storage.view(),
-                                         dr16_rx_callback, self, nullptr);
+                                         bsp::usart::rx_callback::bind<dr16, &dr16::dr16_rx_callback>(self),
+                                         nullptr);
         }
 
         TX_INTERRUPT_SAVE_AREA

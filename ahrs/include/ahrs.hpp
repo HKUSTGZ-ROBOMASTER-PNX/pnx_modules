@@ -141,7 +141,7 @@ public:
 
 private:
     static void imu_thread_entry(ULONG arg);
-    static void gyro_data_ready_callback(void* user);
+    void gyro_data_ready_callback();
     bool create_resources();
     void wait_for_gyro_data_ready();
     void fill_msg(message& msg, const quaternion_ekf& ekf, const imu::reading& reading);

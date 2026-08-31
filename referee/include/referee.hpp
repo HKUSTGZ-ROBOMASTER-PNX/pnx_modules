@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bsp_usart.hpp"
+#include "callback.hpp"
 #include "msg.hpp"
 #include "referee_protocol.hpp"
 #include "tx_api.h"
@@ -61,8 +62,7 @@ struct communication_status
     uint32_t unknown_packet_count = 0;
 };
 
-using update_callback = void (*)(const packet_store& packets, const update_info& update,
-                                 void* context);
+using update_callback = core::callback<void(const packet_store&, const update_info&)>;
 
 struct config
 {
@@ -71,8 +71,7 @@ struct config
     receive_config receive{};
     // Invoked synchronously in the referee receive thread after a valid frame is processed.
     // The callback must not block. Configuration is fixed by the first successful init().
-    update_callback on_update = nullptr;
-    void* update_context = nullptr;
+    update_callback on_update{};
 };
 
 struct data
@@ -111,8 +110,7 @@ public:
 private:
     static void referee_thread_entry(ULONG arg);
     bool create_resources();
-    static void referee_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                    void* user);
+    static void referee_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
 
     config cfg_{};
     TX_THREAD thread_{};
