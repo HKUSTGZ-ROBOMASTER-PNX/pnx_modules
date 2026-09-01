@@ -54,7 +54,7 @@ class dr16
 public:
     static dr16& instance();
 
-    bool init(const dr16_config& cfg = {});
+    types::status init(const dr16_config& cfg = {});
     TX_SEMAPHORE* rx_sem() { return &rx_sem_; }
     msg::channel<dr16_state>& output() noexcept { return output_; }
 
@@ -83,7 +83,7 @@ class vt03
 public:
     static vt03& instance();
 
-    bool init(const vt03_config& cfg = {});
+    types::status init(const vt03_config& cfg = {});
     msg::channel<vt03_state>& output() noexcept { return output_; }
 
 private:
@@ -111,7 +111,7 @@ class ps2
 public:
     static ps2& instance();
 
-    bool init(const ps2_config& cfg = {});
+    types::status init(const ps2_config& cfg = {});
     msg::channel<ps2_state>& output() noexcept { return output_; }
 
 private:
@@ -140,7 +140,7 @@ class service
 public:
     static service& instance();
 
-    bool init(const config& cfg = {});
+    types::status init(const config& cfg = {});
     msg::channel<state>& output() noexcept { return output_; }
 
 private:

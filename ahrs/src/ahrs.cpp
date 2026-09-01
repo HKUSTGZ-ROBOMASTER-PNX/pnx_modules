@@ -101,25 +101,26 @@ bool service::create_resources()
     return true;
 }
 
-bool service::init(const config& cfg)
+types::status service::init(const config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
     telemetry_.initialized = true;
     telemetry_.resources_created = true;
-    return true;
+    return types::status::ok;
 }
 
 void service::fill_state(imu::state& output, const quaternion_ekf& ekf,
@@ -308,36 +309,37 @@ bool dmimu_service::create_resources()
     return true;
 }
 
-bool dmimu_service::init(const imu::dmimu::config& dmimu_cfg,
-                         const dmimu_service_config& service_cfg)
+types::status dmimu_service::init(const imu::dmimu::config& dmimu_cfg,
+                                  const dmimu_service_config& service_cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     if (service_cfg.receive_wait_ticks == TX_NO_WAIT ||
         service_cfg.receive_wait_ticks == TX_WAIT_FOREVER ||
         (dmimu_cfg.runtime.communication_mode == imu::dmimu::mode::request &&
          service_cfg.request_period_ticks == 0U))
     {
-        return false;
+        return types::status::invalid_arg;
     }
 
     dmimu_cfg_ = dmimu_cfg;
     service_cfg_ = service_cfg;
     telemetry_ = {};
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
 
     initialized_ = true;
     telemetry_.initialized = true;
-    return true;
+    return types::status::ok;
 }
 
 bool dmimu_service::request_snapshot()

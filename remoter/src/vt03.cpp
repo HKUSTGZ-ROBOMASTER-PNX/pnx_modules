@@ -74,23 +74,24 @@ bool vt03::create_resources()
     return true;
 }
 
-bool vt03::init(const vt03_config& cfg)
+types::status vt03::init(const vt03_config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void vt03::fill_raw(state& raw, const vt03_frame& frame)

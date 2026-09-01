@@ -145,19 +145,19 @@ bool service::create_resources()
     return true;
 }
 
-bool service::init(const config& cfg)
+types::status service::init(const config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void service::referee_thread_entry(ULONG arg)

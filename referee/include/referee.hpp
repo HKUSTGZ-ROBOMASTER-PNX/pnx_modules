@@ -68,7 +68,7 @@ class service
 public:
     static service& instance();
 
-    bool init(const config& cfg = {});
+    types::status init(const config& cfg = {});
     TX_SEMAPHORE* heartbeat_sem() { return &heartbeat_sem_; }
     const packet_store& packets() const noexcept { return packets_; }
     const communication_status& status() const noexcept { return status_; }

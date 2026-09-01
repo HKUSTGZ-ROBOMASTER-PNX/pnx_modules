@@ -103,44 +103,61 @@ bool service::create_resources()
     return true;
 }
 
-bool service::init(const config& cfg)
+types::status service::init(const config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
 
     bool any_source = false;
-    if (::config::feature::enable_dr16 && !dr16::instance().init(cfg_.dr16))
+    if (::config::feature::enable_dr16)
     {
-        return false;
+        const types::status status = dr16::instance().init(cfg_.dr16);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_dr16;
 
-    if (::config::feature::enable_vt03 && !vt03::instance().init(cfg_.vt03))
+    if (::config::feature::enable_vt03)
     {
-        return false;
+        const types::status status = vt03::instance().init(cfg_.vt03);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_vt03;
 
-    if (::config::feature::enable_ps2 && !ps2::instance().init(cfg_.ps2))
+    if (::config::feature::enable_ps2)
     {
-        return false;
+        const types::status status = ps2::instance().init(cfg_.ps2);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_ps2;
 
-    if (!any_source || !create_resources())
+    if (!any_source)
     {
-        return false;
+        return types::status::not_configured;
+    }
+    if (!create_resources())
+    {
+        return types::status::error;
     }
 
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void service::merge_thread_entry(ULONG arg)

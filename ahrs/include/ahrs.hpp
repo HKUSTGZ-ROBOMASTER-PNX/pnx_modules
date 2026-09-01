@@ -102,7 +102,7 @@ class service
 public:
     static service& instance();
 
-    bool init(const config& cfg = {});
+    types::status init(const config& cfg = {});
     TX_SEMAPHORE* heartbeat_sem() { return &heartbeat_sem_; }
     imu::bmi088& imu() { return imu_; }
     msg::channel<imu::state>& output() noexcept { return output_; }
@@ -143,8 +143,8 @@ public:
 
     // Calling init is the enable switch for this service. The later robot
     // configuration layer must omit this call when DMIMU is not configured.
-    bool init(const imu::dmimu::config& dmimu_cfg,
-              const dmimu_service_config& service_cfg = {});
+    types::status init(const imu::dmimu::config& dmimu_cfg,
+                       const dmimu_service_config& service_cfg = {});
     TX_SEMAPHORE* heartbeat_sem() { return &heartbeat_sem_; }
     imu::dmimu& dmimu() { return dmimu_; }
     msg::channel<imu::state>& output() noexcept { return output_; }

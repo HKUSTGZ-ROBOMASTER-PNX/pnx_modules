@@ -62,23 +62,24 @@ bool dr16::create_resources()
     return true;
 }
 
-bool dr16::init(const dr16_config& cfg)
+types::status dr16::init(const dr16_config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void dr16::dr16_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)

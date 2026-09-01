@@ -203,29 +203,30 @@ bool ps2::create_resources()
     return true;
 }
 
-bool ps2::init(const ps2_config& cfg)
+types::status ps2::init(const ps2_config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     if (cfg.receiver_offline_timeout_ticks == 0U || cfg.frame_timeout_ticks == 0U ||
         cfg.deadzone < 0.0f || cfg.deadzone >= 1.0f)
     {
-        return false;
+        return types::status::invalid_arg;
     }
 
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
