@@ -323,10 +323,10 @@ void service::referee_thread_entry(ULONG arg)
                     }
 
                     const update_info update{command_id, true, result == decode_result::known};
-                    if (self->cfg_.on_update)
+                    if (self->cfg_.on_update_callback)
                     {
                         // Runs synchronously in the referee receive thread and must not block.
-                        self->cfg_.on_update(self->packets_, update);
+                        self->cfg_.on_update_callback(self->packets_, update);
                     }
                     state = STEP_HEADER_SOF;
                 }

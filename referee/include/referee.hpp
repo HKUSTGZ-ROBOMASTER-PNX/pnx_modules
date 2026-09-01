@@ -71,7 +71,7 @@ struct config
     receive_config receive{};
     // Invoked synchronously in the referee receive thread after a valid frame is processed.
     // The callback must not block. Configuration is fixed by the first successful init().
-    update_callback on_update{};
+    update_callback on_update_callback{};
 };
 
 struct data
