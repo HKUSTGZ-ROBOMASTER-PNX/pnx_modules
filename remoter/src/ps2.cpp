@@ -157,8 +157,7 @@ bool ps2::create_resources()
         return false;
     }
 
-    remoter_topic_ = msg::create<ps2_state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_, "remoter/ps2/raw") != types::status::ok)
     {
         return false;
     }
@@ -260,7 +259,7 @@ void ps2::ps2_thread_entry(ULONG arg)
 
     ps2_state raw_msg{};
     set_disconnected(raw_msg, ps2_link_state::receiver_offline, tx_time_get(), false);
-    msg::publish(self->remoter_topic_, raw_msg);
+    msg::publish(self->output_, raw_msg);
 
     ps2_uart_frame candidate{};
     std::size_t candidate_size = 0;
@@ -314,7 +313,7 @@ void ps2::ps2_thread_entry(ULONG arg)
                 {
                     set_disconnected(raw_msg, ps2_link_state::remote_disconnected, now, true);
                     last_signal_tick = now;
-                    msg::publish(self->remoter_topic_, raw_msg);
+                    msg::publish(self->output_, raw_msg);
                 }
                 continue;
             }
@@ -330,7 +329,7 @@ void ps2::ps2_thread_entry(ULONG arg)
             {
                 set_connected(raw_msg, candidate, self->cfg_.deadzone, now);
                 last_signal_tick = now;
-                msg::publish(self->remoter_topic_, raw_msg);
+                msg::publish(self->output_, raw_msg);
                 candidate_size = 0;
             }
             else
@@ -347,7 +346,7 @@ void ps2::ps2_thread_entry(ULONG arg)
             raw_msg.link != ps2_link_state::receiver_offline)
         {
             set_disconnected(raw_msg, ps2_link_state::receiver_offline, now, false);
-            msg::publish(self->remoter_topic_, raw_msg);
+            msg::publish(self->output_, raw_msg);
         }
     }
 }

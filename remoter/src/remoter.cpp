@@ -68,16 +68,26 @@ service& service::instance()
 
 bool service::create_resources()
 {
-    remoter_topic_ = msg::create<state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_, "remoter/state") != types::status::ok)
     {
         return false;
     }
 
-    dr16_sub_ = msg::subscribe<dr16_state>();
-    vt03_sub_ = msg::subscribe<vt03_state>();
-    ps2_sub_ = msg::subscribe<ps2_state>();
-    if (!dr16_sub_.valid() || !vt03_sub_.valid() || !ps2_sub_.valid())
+    if constexpr (::config::feature::enable_dr16)
+    {
+        dr16_sub_ = msg::subscribe(dr16::instance().output());
+    }
+    if constexpr (::config::feature::enable_vt03)
+    {
+        vt03_sub_ = msg::subscribe(vt03::instance().output());
+    }
+    if constexpr (::config::feature::enable_ps2)
+    {
+        ps2_sub_ = msg::subscribe(ps2::instance().output());
+    }
+    if ((::config::feature::enable_dr16 && !dr16_sub_.valid()) ||
+        (::config::feature::enable_vt03 && !vt03_sub_.valid()) ||
+        (::config::feature::enable_ps2 && !ps2_sub_.valid()))
     {
         return false;
     }
@@ -209,7 +219,7 @@ void service::merge_thread_entry(ULONG arg)
         }
 
         output.update_count = ++update_count;
-        msg::publish(self->remoter_topic_, output);
+        msg::publish(self->output_, output);
         if (self->cfg_.on_update_callback)
         {
             self->cfg_.on_update_callback(output);

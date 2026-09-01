@@ -28,8 +28,7 @@ bool dr16::create_resources()
         return false;
     }
 
-    remoter_topic_ = msg::create<dr16_state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_, "remoter/dr16/raw") != types::status::ok)
     {
         return false;
     }
@@ -114,7 +113,7 @@ void dr16::dr16_thread_entry(ULONG arg)
         {
             msg.offline = true;
             bsp::usart::restart_rx(self->cfg_.uart_port);
-            msg::publish(self->remoter_topic_, raw_msg);
+            msg::publish(self->output_, raw_msg);
             tx_thread_sleep(3);
             bsp::usart::start_rx_to_idle(self->cfg_.uart_port, rx_buffer_storage.view(),
                                          bsp::usart::rx_callback::bind<dr16, &dr16::dr16_rx_callback>(self),
@@ -160,7 +159,7 @@ void dr16::dr16_thread_entry(ULONG arg)
         msg.mouse_right = frame.mouse_right != 0;
 
         std::memcpy(&msg.key, &frame.key, sizeof(msg.key));
-        msg::publish(self->remoter_topic_, raw_msg);
+        msg::publish(self->output_, raw_msg);
         msg.last_left_sw = msg.left_sw;
         msg.last_right_sw = msg.right_sw;
         std::memcpy(&msg.last_key, &msg.key, sizeof(msg.last_key));

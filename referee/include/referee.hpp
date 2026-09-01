@@ -2,7 +2,6 @@
 
 #include "bsp_usart.hpp"
 #include "callback.hpp"
-#include "msg.hpp"
 #include "referee_protocol.hpp"
 #include "tx_api.h"
 #include "config.hpp"
@@ -11,20 +10,6 @@
 
 namespace referee
 {
-
-struct receive_config
-{
-    // Compatibility filter for the legacy referee::data topic only.
-    // packet_store always keeps every supported official packet.
-    bool game_robot_status = true;
-    bool power_heat = true;
-    bool buff = true;
-    bool robot_hurt = true;
-    bool game_status = true;
-    bool dart_info = true;
-    bool dart_client_command = true;
-    bool robot_interaction = true;
-};
 
 struct robot_interaction_data
 {
@@ -68,32 +53,15 @@ struct config
 {
     bsp::usart::port uart_port = app::uart::referee;
     uint32_t thread_priority = 8;
-    receive_config receive{};
     // Invoked synchronously in the referee receive thread after a valid frame is processed.
     // The callback must not block. Configuration is fixed by the first successful init().
     update_callback on_update_callback{};
-};
-
-struct data
-{
-    bool online = false;
-    uint32_t update_count = 0;
-    GameRobotStatus_t robot_status{};
-    uint16_t heat_now = 0;
-    uint16_t power_buffer = 0;
-    uint8_t remained_energy = 0;
-    RobotHurt_t robot_hurt{};
-    GameStatus_t game_status{};
-    DartInfo_t dart_info{};
-    DartClientCmd_t dart_client_command{};
-    robot_interaction_data robot_interaction{};
 };
 
 static_assert(std::is_trivially_copyable_v<robot_interaction_data>);
 static_assert(std::is_trivially_copyable_v<packet_store>);
 static_assert(std::is_trivially_copyable_v<update_info>);
 static_assert(std::is_trivially_copyable_v<communication_status>);
-static_assert(std::is_trivially_copyable_v<data>);
 
 class service
 {
@@ -120,7 +88,6 @@ private:
     RefereeRingBuffer rx_fifo_{};
     packet_store packets_{};
     communication_status status_{};
-    msg::topic* referee_topic_ = nullptr;
     uint8_t* rx_buffer_ = nullptr;
     bool initialized_ = false;
 };

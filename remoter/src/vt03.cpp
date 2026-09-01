@@ -40,8 +40,7 @@ bool vt03::create_resources()
         return false;
     }
 
-    remoter_topic_ = msg::create<vt03_state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_, "remoter/vt03/raw") != types::status::ok)
     {
         return false;
     }
@@ -198,7 +197,7 @@ void vt03::vt03_thread_entry(ULONG arg)
             output.offline = true;
         }
 
-        msg::publish(self->remoter_topic_, raw_msg);
+            msg::publish(self->output_, raw_msg);
         output.last_left_sw = output.left_sw;
         std::memcpy(&output.last_key, &output.key, sizeof(output.last_key));
         tx_thread_sleep(1);

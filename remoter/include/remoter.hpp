@@ -56,6 +56,7 @@ public:
 
     bool init(const dr16_config& cfg = {});
     TX_SEMAPHORE* rx_sem() { return &rx_sem_; }
+    msg::channel<dr16_state>& output() noexcept { return output_; }
 
 private:
     static void dr16_thread_entry(ULONG arg);
@@ -73,7 +74,7 @@ private:
     volatile std::uint8_t ready_frame_idx_ = 0;
     std::uint8_t write_frame_idx_ = 0;
     volatile bool frame_ready_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<dr16_state> output_{};
     bool initialized_ = false;
 };
 
@@ -83,6 +84,7 @@ public:
     static vt03& instance();
 
     bool init(const vt03_config& cfg = {});
+    msg::channel<vt03_state>& output() noexcept { return output_; }
 
 private:
     static void vt03_thread_entry(ULONG arg);
@@ -100,7 +102,7 @@ private:
     volatile std::uint8_t ready_frame_idx_ = 0;
     std::uint8_t write_frame_idx_ = 0;
     volatile bool frame_ready_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<vt03_state> output_{};
     bool initialized_ = false;
 };
 
@@ -110,6 +112,7 @@ public:
     static ps2& instance();
 
     bool init(const ps2_config& cfg = {});
+    msg::channel<ps2_state>& output() noexcept { return output_; }
 
 private:
     static constexpr std::size_t stream_buffer_size = 64;
@@ -128,7 +131,7 @@ private:
     volatile std::size_t stream_head_ = 0;
     volatile std::size_t stream_tail_ = 0;
     volatile bool stream_overflow_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<ps2_state> output_{};
     bool initialized_ = false;
 };
 
@@ -138,6 +141,7 @@ public:
     static service& instance();
 
     bool init(const config& cfg = {});
+    msg::channel<state>& output() noexcept { return output_; }
 
 private:
     static void merge_thread_entry(ULONG arg);
@@ -147,7 +151,7 @@ private:
     TX_THREAD thread_{};
     // F407 source merging can overflow 768 B and corrupt the ThreadX control block.
     alignas(8) std::uint8_t stack_[1536]{};
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<state> output_{};
     msg::subscriber dr16_sub_{};
     msg::subscriber vt03_sub_{};
     msg::subscriber ps2_sub_{};

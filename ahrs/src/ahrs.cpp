@@ -76,8 +76,7 @@ bool service::create_resources()
         return false;
     }
 
-    ahrs_topic_ = msg::create<message>();
-    if (ahrs_topic_ == nullptr)
+    if (msg::init(output_, "imu/ahrs") != types::status::ok)
     {
         return false;
     }
@@ -123,19 +122,23 @@ bool service::init(const config& cfg)
     return true;
 }
 
-void service::fill_msg(message& msg, const quaternion_ekf& ekf, const imu::reading& reading)
+void service::fill_state(imu::state& output, const quaternion_ekf& ekf,
+                         const imu::reading& reading)
 {
-    std::memcpy(msg.quaternion, ekf.q, sizeof(ekf.q));
-    msg.yaw = ekf.yaw;
-    msg.pitch = ekf.pitch;
-    msg.roll = ekf.roll;
-    msg.total_yaw = ekf.total_yaw;
-    msg.gyro_r = reading.gyro.x;
-    msg.gyro_p = reading.gyro.y;
-    msg.gyro_y = reading.gyro.z;
-    msg.accel[0] = reading.accel.x;
-    msg.accel[1] = reading.accel.y;
-    msg.accel[2] = reading.accel.z;
+    std::memcpy(output.quaternion, ekf.q, sizeof(ekf.q));
+    output.yaw = ekf.yaw;
+    output.pitch = ekf.pitch;
+    output.roll = ekf.roll;
+    output.total_yaw = ekf.total_yaw;
+    output.gyro[0] = reading.gyro.x;
+    output.gyro[1] = reading.gyro.y;
+    output.gyro[2] = reading.gyro.z;
+    output.accel[0] = reading.accel.x;
+    output.accel[1] = reading.accel.y;
+    output.accel[2] = reading.accel.z;
+    output.sequence = telemetry_.update_count;
+    output.received_tick = static_cast<std::uint32_t>(tx_time_get());
+    output.online = telemetry_.read_ok;
 }
 
 void service::gyro_data_ready_callback()
@@ -162,7 +165,7 @@ void service::imu_thread_entry(ULONG arg)
         self = &instance();
     }
 
-    message msg{};
+    imu::state output{};
     imu::reading reading{};
     quaternion_ekf ekf;
     self->tactical_ekf_.reset();
@@ -257,8 +260,8 @@ void service::imu_thread_entry(ULONG arg)
         }
 
         tx_semaphore_put(&self->heartbeat_sem_);
-        self->fill_msg(msg, ekf, reading);
-        msg::publish(self->ahrs_topic_, msg);
+        self->fill_state(output, ekf, reading);
+        msg::publish(self->output_, output);
         self->imu_loop_monitor_.end();
         const auto& loop_stats = self->imu_loop_monitor_.stats();
         self->telemetry_.loop_runtime_us = loop_stats.last_us;
@@ -287,8 +290,7 @@ bool dmimu_service::create_resources()
         return false;
     }
 
-    topic_ = msg::create<dmimu_message>();
-    if (topic_ == nullptr)
+    if (msg::init(output_, "imu/dmimu") != types::status::ok)
     {
         return false;
     }
@@ -359,16 +361,16 @@ bool dmimu_service::request_snapshot()
 
 void dmimu_service::publish_snapshot(const imu::dmimu::snapshot& snapshot)
 {
-    dmimu_message output{};
+    imu::state output{};
     std::memcpy(output.quaternion, snapshot.quaternion, sizeof(output.quaternion));
     // The device protocol exposes Euler angles in degrees. The AHRS-facing
     // message contract uses radians, matching the existing BMI088 output.
     output.yaw = degrees_to_radians(snapshot.yaw_deg);
     output.pitch = degrees_to_radians(snapshot.pitch_deg);
     output.roll = degrees_to_radians(snapshot.roll_deg);
-    output.gyro_r = snapshot.gyro.x;
-    output.gyro_p = snapshot.gyro.y;
-    output.gyro_y = snapshot.gyro.z;
+    output.gyro[0] = snapshot.gyro.x;
+    output.gyro[1] = snapshot.gyro.y;
+    output.gyro[2] = snapshot.gyro.z;
     output.accel[0] = snapshot.accel.x;
     output.accel[1] = snapshot.accel.y;
     output.accel[2] = snapshot.accel.z;
@@ -376,7 +378,7 @@ void dmimu_service::publish_snapshot(const imu::dmimu::snapshot& snapshot)
     output.received_tick = snapshot.received_tick;
     output.online = true;
 
-    if (msg::publish(topic_, output) == types::status::ok)
+    if (msg::publish(output_, output) == types::status::ok)
     {
         ++telemetry_.publish_count;
         telemetry_.last_sequence = output.sequence;
@@ -392,8 +394,9 @@ void dmimu_service::publish_offline_zero()
 {
     // A value-initialized message deliberately clears quaternion, Euler,
     // angular velocity, acceleration and metadata together on disconnect.
-    const dmimu_message output{};
-    if (msg::publish(topic_, output) == types::status::ok)
+    imu::state output{};
+    std::memset(output.quaternion, 0, sizeof(output.quaternion));
+    if (msg::publish(output_, output) == types::status::ok)
     {
         ++telemetry_.publish_count;
         ++telemetry_.offline_zero_publish_count;
