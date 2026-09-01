@@ -208,14 +208,12 @@ void service::merge_thread_entry(ULONG arg)
             break;
         }
 
-        output.ps2_link = ps2.data.ps2_link;
-        output.ps2_buttons = ps2.data.ps2_buttons;
-        output.ps2_pressed = ps2.data.ps2_pressed;
-        output.ps2_released = ps2.data.ps2_released;
-        output.ps2_event_count = ps2.data.ps2_event_count;
-
         output.update_count = ++update_count;
         msg::publish(self->remoter_topic_, output);
+        if (self->cfg_.on_update_callback)
+        {
+            self->cfg_.on_update_callback(output);
+        }
         output.last_left_sw = output.left_sw;
         output.last_right_sw = output.right_sw;
         output.last_key = output.key;

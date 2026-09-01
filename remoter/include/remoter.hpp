@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bsp_usart.hpp"
+#include "callback.hpp"
 #include "config.hpp"
 #include "msg.hpp"
 #include "types.hpp"
@@ -11,6 +12,10 @@
 
 namespace remoter
 {
+
+// Called synchronously by the remoter merge thread after publishing state.
+// The callback must not block. The state reference is valid only for this call.
+using update_callback = core::callback<void(const state&)>;
 
 struct dr16_config
 {
@@ -39,6 +44,7 @@ struct config
     dr16_config dr16{};
     vt03_config vt03{};
     ps2_config ps2{};
+    update_callback on_update_callback{};
     std::uint32_t thread_priority = 2;
     std::uint32_t offline_timeout_ticks = 120;
 };

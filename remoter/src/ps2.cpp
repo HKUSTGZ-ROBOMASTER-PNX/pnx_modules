@@ -81,7 +81,6 @@ void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
                       bool signal_received)
 {
     const uint16_t previous_buttons = message.data.ps2_buttons;
-    const uint32_t previous_event_count = message.data.ps2_event_count;
     if (signal_received)
     {
         ++message.signal_count;
@@ -91,10 +90,12 @@ void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
     message.data = {};
     message.data.offline = true;
     message.data.active_source = source::ps2;
-    message.data.ps2_link = link;
     message.data.ps2_released = previous_buttons;
-    message.data.ps2_event_count =
-        previous_event_count + (previous_buttons != 0U ? 1U : 0U);
+    message.link = link;
+    if (previous_buttons != 0U)
+    {
+        ++message.button_event_count;
+    }
     message.raw_left_x = axis_x_center;
     message.raw_left_y = axis_y_center;
     message.raw_right_x = axis_x_center;
@@ -112,14 +113,12 @@ void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzo
     state output{};
     output.offline = false;
     output.active_source = source::ps2;
-    output.ps2_link = ps2_link_state::connected;
     output.ps2_buttons = current_buttons;
     output.ps2_pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
     output.ps2_released = previous_buttons & static_cast<uint16_t>(~current_buttons);
-    output.ps2_event_count = message.data.ps2_event_count;
     if (output.ps2_pressed != 0U || output.ps2_released != 0U)
     {
-        ++output.ps2_event_count;
+        ++message.button_event_count;
     }
     output.last_left_sw = message.data.left_sw;
     output.last_right_sw = message.data.right_sw;
@@ -133,6 +132,7 @@ void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzo
     output.wheel = 0.0f;
 
     message.data = output;
+    message.link = ps2_link_state::connected;
     message.raw_left_x = frame.left_x;
     message.raw_left_y = frame.left_y;
     message.raw_right_x = frame.right_x;
@@ -344,7 +344,7 @@ void ps2::ps2_thread_entry(ULONG arg)
         }
 
         if ((now - last_signal_tick) > self->cfg_.receiver_offline_timeout_ticks &&
-            raw_msg.data.ps2_link != ps2_link_state::receiver_offline)
+            raw_msg.link != ps2_link_state::receiver_offline)
         {
             set_disconnected(raw_msg, ps2_link_state::receiver_offline, now, false);
             msg::publish(self->remoter_topic_, raw_msg);
