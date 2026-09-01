@@ -20,33 +20,28 @@ using update_callback = core::callback<void(const state&)>;
 struct dr16_config
 {
     bsp::usart::port uart_port = app::uart::dr16;
-    std::uint32_t thread_priority = 2;
-    std::uint32_t rx_timeout_ticks = 100;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
+    std::uint32_t rx_timeout_ticks = params::remoter::rx_timeout_ticks;
 };
 
 struct vt03_config
 {
     bsp::usart::port uart_port = app::uart::vt03;
-    std::uint32_t thread_priority = 2;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
 };
 
 struct ps2_config
 {
     bsp::usart::port uart_port = app::uart::ps2;
-    std::uint32_t thread_priority = 2;
-    std::uint32_t receiver_offline_timeout_ticks = 600;
-    std::uint32_t frame_timeout_ticks = 20;
-    float deadzone = 0.08f;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
+    std::uint32_t receiver_offline_timeout_ticks = params::remoter::ps2_offline_timeout_ticks;
+    std::uint32_t frame_timeout_ticks = params::remoter::ps2_frame_timeout_ticks;
+    float deadzone = params::remoter::ps2_deadzone;
 };
 
 struct config
 {
-    dr16_config dr16{};
-    vt03_config vt03{};
-    ps2_config ps2{};
     update_callback on_update_callback{};
-    std::uint32_t thread_priority = 2;
-    std::uint32_t offline_timeout_ticks = 120;
 };
 
 class dr16

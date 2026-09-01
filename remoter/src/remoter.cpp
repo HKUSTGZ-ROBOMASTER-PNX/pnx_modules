@@ -94,7 +94,8 @@ bool service::create_resources()
 
     if (tx_thread_create(&thread_, const_cast<CHAR*>("remoter"), merge_thread_entry,
                          reinterpret_cast<ULONG>(this), stack_, sizeof(stack_),
-                         cfg_.thread_priority, cfg_.thread_priority, TX_NO_TIME_SLICE,
+                         params::remoter::thread_priority + 1U,
+                         params::remoter::thread_priority + 1U, TX_NO_TIME_SLICE,
                          TX_AUTO_START) != TX_SUCCESS)
     {
         return false;
@@ -117,9 +118,9 @@ types::status service::init(const config& cfg)
     }
 
     bool any_source = false;
-    if (::config::feature::enable_dr16)
+    if constexpr (::config::feature::enable_dr16)
     {
-        const types::status status = dr16::instance().init(cfg_.dr16);
+        const types::status status = dr16::instance().init();
         if (status != types::status::ok)
         {
             return status;
@@ -127,9 +128,9 @@ types::status service::init(const config& cfg)
     }
     any_source = any_source || ::config::feature::enable_dr16;
 
-    if (::config::feature::enable_vt03)
+    if constexpr (::config::feature::enable_vt03)
     {
-        const types::status status = vt03::instance().init(cfg_.vt03);
+        const types::status status = vt03::instance().init();
         if (status != types::status::ok)
         {
             return status;
@@ -137,9 +138,9 @@ types::status service::init(const config& cfg)
     }
     any_source = any_source || ::config::feature::enable_vt03;
 
-    if (::config::feature::enable_ps2)
+    if constexpr (::config::feature::enable_ps2)
     {
-        const types::status status = ps2::instance().init(cfg_.ps2);
+        const types::status status = ps2::instance().init();
         if (status != types::status::ok)
         {
             return status;
@@ -209,7 +210,7 @@ void service::merge_thread_entry(ULONG arg)
 
         const ULONG now = tx_time_get();
         active = choose_source(active, dr16, vt03, ps2, now,
-                               self->cfg_.offline_timeout_ticks);
+                               params::remoter::offline_timeout_ticks);
 
         switch (active)
         {
