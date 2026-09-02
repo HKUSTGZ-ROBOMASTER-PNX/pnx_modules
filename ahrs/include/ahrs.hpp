@@ -16,10 +16,12 @@ namespace ahrs
 
 struct config
 {
-    float imu_offset_x = 0.0f;
-    uint32_t imu_thread_priority = 3;
-    uint32_t temp_thread_priority = 4;
-    float target_temp = 45.0f;
+    // Robot defaults come from params; callers may still override individual
+    // fields before passing this configuration to service::init().
+    float imu_offset_x = params::ahrs::imu_offset_x;
+    uint32_t imu_thread_priority = params::ahrs::imu_thread_priority;
+    uint32_t temp_thread_priority = params::ahrs::temp_thread_priority;
+    float target_temp = params::ahrs::target_temp;
     bool temperature_control_enabled = true;
 };
 
