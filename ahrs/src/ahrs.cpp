@@ -76,7 +76,7 @@ bool service::create_resources()
         return false;
     }
 
-    if (msg::init(output_, "imu/ahrs") != types::status::ok)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }
@@ -291,7 +291,7 @@ bool dmimu_service::create_resources()
         return false;
     }
 
-    if (msg::init(output_, "imu/dmimu") != types::status::ok)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }

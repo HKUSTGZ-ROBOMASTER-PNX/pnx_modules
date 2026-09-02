@@ -157,7 +157,7 @@ bool ps2::create_resources()
         return false;
     }
 
-    if (msg::init(output_, "remoter/ps2/raw") != types::status::ok)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }

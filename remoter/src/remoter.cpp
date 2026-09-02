@@ -68,7 +68,7 @@ service& service::instance()
 
 bool service::create_resources()
 {
-    if (msg::init(output_, "remoter/state") != types::status::ok)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }

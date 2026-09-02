@@ -28,7 +28,7 @@ bool dr16::create_resources()
         return false;
     }
 
-    if (msg::init(output_, "remoter/dr16/raw") != types::status::ok)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }
