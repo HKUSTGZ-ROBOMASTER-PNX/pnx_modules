@@ -25,6 +25,35 @@ bool update_online(bool got, uint32_t& lost_cnt)
     return lost_cnt < static_cast<uint32_t>(lost_threshold);
 }
 
+sw_state map_vt03_mode(uint8_t raw)
+{
+    switch (raw)
+    {
+    case 0:
+        return sw_state::low;
+    case 1:
+        return sw_state::mid;
+    case 2:
+        return sw_state::up;
+    default:
+        return sw_state::low;
+    }
+}
+
+sw_state next_shoot_switch(sw_state current)
+{
+    switch (current)
+    {
+    case sw_state::low:
+        return sw_state::mid;
+    case sw_state::mid:
+        return sw_state::up;
+    case sw_state::up:
+    default:
+        return sw_state::low;
+    }
+}
+
 } // namespace
 
 vt03& vt03::instance()
@@ -96,7 +125,20 @@ types::status vt03::init(const vt03_config& cfg)
 
 void vt03::fill_raw(state& raw, const vt03_frame& frame)
 {
-    raw.left_sw = map_switch(static_cast<uint8_t>(frame.mode_sw));
+    const bool fn_1 = frame.fn_1 != 0;
+    const bool fn_2 = frame.fn_2 != 0;
+    const bool fn_1_pressed = fn_1 && !raw.fn_1;
+    const bool fn_2_pressed = fn_2 && !raw.fn_2;
+
+    raw.left_sw = map_vt03_mode(static_cast<uint8_t>(frame.mode_sw));
+    if (fn_1_pressed)
+    {
+        raw.right_sw = sw_state::low;
+    }
+    else if (fn_2_pressed)
+    {
+        raw.right_sw = next_shoot_switch(raw.right_sw);
+    }
     raw.right_x = (static_cast<float>(frame.ch_0) - static_cast<float>(rc_ch_value_offset)) /
                   static_cast<float>(rc_ch_offset_max);
     raw.right_y = (static_cast<float>(frame.ch_1) - static_cast<float>(rc_ch_value_offset)) /
@@ -112,8 +154,8 @@ void vt03::fill_raw(state& raw, const vt03_frame& frame)
     raw.mouse_z = static_cast<float>(frame.mouse_z);
     raw.mouse_left = frame.mouse_left != 0;
     raw.mouse_right = frame.mouse_right != 0;
-    raw.fn_1 = frame.fn_1 != 0;
-    raw.fn_2 = frame.fn_2 != 0;
+    raw.fn_1 = fn_1;
+    raw.fn_2 = fn_2;
     raw.button = frame.trigger != 0;
     raw.pause = frame.pause != 0;
     std::memcpy(&raw.key, &frame.key, sizeof(raw.key));
@@ -143,7 +185,7 @@ void vt03::vt03_thread_entry(ULONG arg)
     vt03_state raw_msg{};
     auto& output = raw_msg.data;
     state raw{};
-    uint32_t lost_cnt = 0;
+    uint32_t lost_cnt = static_cast<uint32_t>(lost_threshold);
     output.offline = true;
     output.active_source = source::vt03;
 
@@ -176,6 +218,7 @@ void vt03::vt03_thread_entry(ULONG arg)
         if (online)
         {
             output.left_sw = raw.left_sw;
+            output.right_sw = raw.right_sw;
             output.right_x = raw.right_x;
             output.right_y = raw.right_y;
             output.left_x = raw.left_x;
@@ -198,8 +241,9 @@ void vt03::vt03_thread_entry(ULONG arg)
             output.offline = true;
         }
 
-            msg::publish(self->output_, raw_msg);
+        msg::publish(self->output_, raw_msg);
         output.last_left_sw = output.left_sw;
+        output.last_right_sw = output.right_sw;
         std::memcpy(&output.last_key, &output.key, sizeof(output.last_key));
         tx_thread_sleep(1);
     }
