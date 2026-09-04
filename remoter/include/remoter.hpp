@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bsp_usart.hpp"
+#include "callback.hpp"
 #include "config.hpp"
 #include "msg.hpp"
 #include "types.hpp"
@@ -12,35 +13,35 @@
 namespace remoter
 {
 
+// Called synchronously by the remoter merge thread after publishing state.
+// The callback must not block. The state reference is valid only for this call.
+using update_callback = core::callback<void(const state&)>;
+
 struct dr16_config
 {
     bsp::usart::port uart_port = app::uart::dr16;
-    std::uint32_t thread_priority = 2;
-    std::uint32_t rx_timeout_ticks = 100;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
+    std::uint32_t rx_timeout_ticks = params::remoter::rx_timeout_ticks;
 };
 
 struct vt03_config
 {
     bsp::usart::port uart_port = app::uart::vt03;
-    std::uint32_t thread_priority = 2;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
 };
 
 struct ps2_config
 {
     bsp::usart::port uart_port = app::uart::ps2;
-    std::uint32_t thread_priority = 2;
-    std::uint32_t receiver_offline_timeout_ticks = 600;
-    std::uint32_t frame_timeout_ticks = 20;
-    float deadzone = 0.08f;
+    std::uint32_t thread_priority = params::remoter::thread_priority;
+    std::uint32_t receiver_offline_timeout_ticks = params::remoter::ps2_offline_timeout_ticks;
+    std::uint32_t frame_timeout_ticks = params::remoter::ps2_frame_timeout_ticks;
+    float deadzone = params::remoter::ps2_deadzone;
 };
 
 struct config
 {
-    dr16_config dr16{};
-    vt03_config vt03{};
-    ps2_config ps2{};
-    std::uint32_t thread_priority = 2;
-    std::uint32_t offline_timeout_ticks = 120;
+    update_callback on_update_callback{};
 };
 
 class dr16
@@ -48,13 +49,13 @@ class dr16
 public:
     static dr16& instance();
 
-    bool init(const dr16_config& cfg = {});
+    types::status init(const dr16_config& cfg = {});
     TX_SEMAPHORE* rx_sem() { return &rx_sem_; }
+    msg::channel<dr16_state>& output() noexcept { return output_; }
 
 private:
     static void dr16_thread_entry(ULONG arg);
-    static void dr16_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                 void* user_data);
+    void dr16_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
 
     dr16_config cfg_{};
@@ -68,7 +69,7 @@ private:
     volatile std::uint8_t ready_frame_idx_ = 0;
     std::uint8_t write_frame_idx_ = 0;
     volatile bool frame_ready_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<dr16_state> output_{};
     bool initialized_ = false;
 };
 
@@ -77,12 +78,12 @@ class vt03
 public:
     static vt03& instance();
 
-    bool init(const vt03_config& cfg = {});
+    types::status init(const vt03_config& cfg = {});
+    msg::channel<vt03_state>& output() noexcept { return output_; }
 
 private:
     static void vt03_thread_entry(ULONG arg);
-    static void vt03_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                 void* user_data);
+    void vt03_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
     void fill_raw(state& raw, const vt03_frame& frame);
 
@@ -96,7 +97,7 @@ private:
     volatile std::uint8_t ready_frame_idx_ = 0;
     std::uint8_t write_frame_idx_ = 0;
     volatile bool frame_ready_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<vt03_state> output_{};
     bool initialized_ = false;
 };
 
@@ -105,14 +106,14 @@ class ps2
 public:
     static ps2& instance();
 
-    bool init(const ps2_config& cfg = {});
+    types::status init(const ps2_config& cfg = {});
+    msg::channel<ps2_state>& output() noexcept { return output_; }
 
 private:
     static constexpr std::size_t stream_buffer_size = 64;
 
     static void ps2_thread_entry(ULONG arg);
-    static void ps2_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                void* user_data);
+    void ps2_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
 
     ps2_config cfg_{};
@@ -125,7 +126,7 @@ private:
     volatile std::size_t stream_head_ = 0;
     volatile std::size_t stream_tail_ = 0;
     volatile bool stream_overflow_ = false;
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<ps2_state> output_{};
     bool initialized_ = false;
 };
 
@@ -134,7 +135,8 @@ class service
 public:
     static service& instance();
 
-    bool init(const config& cfg = {});
+    types::status init(const config& cfg = {});
+    msg::channel<state>& output() noexcept { return output_; }
 
 private:
     static void merge_thread_entry(ULONG arg);
@@ -144,7 +146,7 @@ private:
     TX_THREAD thread_{};
     // F407 source merging can overflow 768 B and corrupt the ThreadX control block.
     alignas(8) std::uint8_t stack_[1536]{};
-    msg::topic* remoter_topic_ = nullptr;
+    msg::channel<state> output_{};
     msg::subscriber dr16_sub_{};
     msg::subscriber vt03_sub_{};
     msg::subscriber ps2_sub_{};

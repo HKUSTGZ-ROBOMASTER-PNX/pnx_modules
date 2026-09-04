@@ -1,5 +1,6 @@
 #include "remoter.hpp"
 
+#include "bsp_dma.hpp"
 #include "memory.h"
 
 #include <algorithm>
@@ -19,7 +20,7 @@ constexpr uint8_t remote_disconnected_byte = 0xAB;
 constexpr uint8_t axis_x_center = 127;
 constexpr uint8_t axis_y_center = 128;
 
-alignas(32) uint8_t rx_buffer_storage[ps2_dma_buffer_size] RAM_D1_BSS{};
+bsp::dma::buffer<ps2_dma_buffer_size> rx_buffer_storage BSP_DMA_BUFFER{};
 
 struct ps2_uart_frame
 {
@@ -80,7 +81,6 @@ void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
                       bool signal_received)
 {
     const uint16_t previous_buttons = message.data.ps2_buttons;
-    const uint32_t previous_event_count = message.data.ps2_event_count;
     if (signal_received)
     {
         ++message.signal_count;
@@ -90,10 +90,12 @@ void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
     message.data = {};
     message.data.offline = true;
     message.data.active_source = source::ps2;
-    message.data.ps2_link = link;
     message.data.ps2_released = previous_buttons;
-    message.data.ps2_event_count =
-        previous_event_count + (previous_buttons != 0U ? 1U : 0U);
+    message.link = link;
+    if (previous_buttons != 0U)
+    {
+        ++message.button_event_count;
+    }
     message.raw_left_x = axis_x_center;
     message.raw_left_y = axis_y_center;
     message.raw_right_x = axis_x_center;
@@ -111,14 +113,12 @@ void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzo
     state output{};
     output.offline = false;
     output.active_source = source::ps2;
-    output.ps2_link = ps2_link_state::connected;
     output.ps2_buttons = current_buttons;
     output.ps2_pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
     output.ps2_released = previous_buttons & static_cast<uint16_t>(~current_buttons);
-    output.ps2_event_count = message.data.ps2_event_count;
     if (output.ps2_pressed != 0U || output.ps2_released != 0U)
     {
-        ++output.ps2_event_count;
+        ++message.button_event_count;
     }
     output.last_left_sw = message.data.left_sw;
     output.last_right_sw = message.data.right_sw;
@@ -132,6 +132,7 @@ void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzo
     output.wheel = 0.0f;
 
     message.data = output;
+    message.link = ps2_link_state::connected;
     message.raw_left_x = frame.left_x;
     message.raw_left_y = frame.left_y;
     message.raw_right_x = frame.right_x;
@@ -156,15 +157,14 @@ bool ps2::create_resources()
         return false;
     }
 
-    remoter_topic_ = msg::create<ps2_state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }
 
-    std::memset(rx_buffer_storage, 0, sizeof(rx_buffer_storage));
+    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
     std::memset(stream_buffer_, 0, sizeof(stream_buffer_));
-    rx_buffer_ = rx_buffer_storage;
+    rx_buffer_ = rx_buffer_storage.data();
     stream_head_ = 0;
     stream_tail_ = 0;
     stream_overflow_ = false;
@@ -185,8 +185,9 @@ bool ps2::create_resources()
     {
         return false;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_, ps2_dma_buffer_size,
-                                     ps2_rx_callback, this, nullptr) != types::status::ok)
+    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
+                                     bsp::usart::rx_callback::bind<ps2, &ps2::ps2_rx_callback>(this),
+                                     nullptr) != types::status::ok)
     {
         return false;
     }
@@ -202,51 +203,51 @@ bool ps2::create_resources()
     return true;
 }
 
-bool ps2::init(const ps2_config& cfg)
+types::status ps2::init(const ps2_config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     if (cfg.receiver_offline_timeout_ticks == 0U || cfg.frame_timeout_ticks == 0U ||
         cfg.deadzone < 0.0f || cfg.deadzone >= 1.0f)
     {
-        return false;
+        return types::status::invalid_arg;
     }
 
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
     if (!create_resources())
     {
-        return false;
+        return types::status::error;
     }
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
-void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame, void* user_data)
+void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
 {
-    auto* self = static_cast<ps2*>(user_data);
-    if (self == nullptr || frame.data == nullptr || frame.len == 0U)
+    if (frame.data == nullptr || frame.len == 0U)
     {
         return;
     }
 
     for (std::size_t i = 0; i < frame.len; ++i)
     {
-        const std::size_t next = (self->stream_head_ + 1U) % stream_buffer_size;
-        if (next == self->stream_tail_)
+        const std::size_t next = (stream_head_ + 1U) % stream_buffer_size;
+        if (next == stream_tail_)
         {
-            self->stream_overflow_ = true;
+            stream_overflow_ = true;
             break;
         }
-        self->stream_buffer_[self->stream_head_] = frame.data[i];
-        self->stream_head_ = next;
+        stream_buffer_[stream_head_] = frame.data[i];
+        stream_head_ = next;
     }
-    tx_semaphore_put(&self->rx_sem_);
+    tx_semaphore_put(&rx_sem_);
 }
 
 void ps2::ps2_thread_entry(ULONG arg)
@@ -259,7 +260,7 @@ void ps2::ps2_thread_entry(ULONG arg)
 
     ps2_state raw_msg{};
     set_disconnected(raw_msg, ps2_link_state::receiver_offline, tx_time_get(), false);
-    msg::publish(self->remoter_topic_, raw_msg);
+    msg::publish(self->output_, raw_msg);
 
     ps2_uart_frame candidate{};
     std::size_t candidate_size = 0;
@@ -313,7 +314,7 @@ void ps2::ps2_thread_entry(ULONG arg)
                 {
                     set_disconnected(raw_msg, ps2_link_state::remote_disconnected, now, true);
                     last_signal_tick = now;
-                    msg::publish(self->remoter_topic_, raw_msg);
+                    msg::publish(self->output_, raw_msg);
                 }
                 continue;
             }
@@ -329,7 +330,7 @@ void ps2::ps2_thread_entry(ULONG arg)
             {
                 set_connected(raw_msg, candidate, self->cfg_.deadzone, now);
                 last_signal_tick = now;
-                msg::publish(self->remoter_topic_, raw_msg);
+                msg::publish(self->output_, raw_msg);
                 candidate_size = 0;
             }
             else
@@ -343,10 +344,10 @@ void ps2::ps2_thread_entry(ULONG arg)
         }
 
         if ((now - last_signal_tick) > self->cfg_.receiver_offline_timeout_ticks &&
-            raw_msg.data.ps2_link != ps2_link_state::receiver_offline)
+            raw_msg.link != ps2_link_state::receiver_offline)
         {
             set_disconnected(raw_msg, ps2_link_state::receiver_offline, now, false);
-            msg::publish(self->remoter_topic_, raw_msg);
+            msg::publish(self->output_, raw_msg);
         }
     }
 }

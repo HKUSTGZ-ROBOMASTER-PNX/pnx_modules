@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bsp_usart.hpp"
-#include "msg.hpp"
+#include "callback.hpp"
 #include "referee_protocol.hpp"
 #include "tx_api.h"
 #include "config.hpp"
@@ -10,20 +10,6 @@
 
 namespace referee
 {
-
-struct receive_config
-{
-    // Compatibility filter for the legacy referee::data topic only.
-    // packet_store always keeps every supported official packet.
-    bool game_robot_status = true;
-    bool power_heat = true;
-    bool buff = true;
-    bool robot_hurt = true;
-    bool game_status = true;
-    bool dart_info = true;
-    bool dart_client_command = true;
-    bool robot_interaction = true;
-};
 
 struct robot_interaction_data
 {
@@ -61,47 +47,28 @@ struct communication_status
     uint32_t unknown_packet_count = 0;
 };
 
-using update_callback = void (*)(const packet_store& packets, const update_info& update,
-                                 void* context);
+using update_callback = core::callback<void(const packet_store&, const update_info&)>;
 
 struct config
 {
     bsp::usart::port uart_port = app::uart::referee;
     uint32_t thread_priority = 8;
-    receive_config receive{};
     // Invoked synchronously in the referee receive thread after a valid frame is processed.
     // The callback must not block. Configuration is fixed by the first successful init().
-    update_callback on_update = nullptr;
-    void* update_context = nullptr;
-};
-
-struct data
-{
-    bool online = false;
-    uint32_t update_count = 0;
-    GameRobotStatus_t robot_status{};
-    uint16_t heat_now = 0;
-    uint16_t power_buffer = 0;
-    uint8_t remained_energy = 0;
-    RobotHurt_t robot_hurt{};
-    GameStatus_t game_status{};
-    DartInfo_t dart_info{};
-    DartClientCmd_t dart_client_command{};
-    robot_interaction_data robot_interaction{};
+    update_callback on_update_callback{};
 };
 
 static_assert(std::is_trivially_copyable_v<robot_interaction_data>);
 static_assert(std::is_trivially_copyable_v<packet_store>);
 static_assert(std::is_trivially_copyable_v<update_info>);
 static_assert(std::is_trivially_copyable_v<communication_status>);
-static_assert(std::is_trivially_copyable_v<data>);
 
 class service
 {
 public:
     static service& instance();
 
-    bool init(const config& cfg = {});
+    types::status init(const config& cfg = {});
     TX_SEMAPHORE* heartbeat_sem() { return &heartbeat_sem_; }
     const packet_store& packets() const noexcept { return packets_; }
     const communication_status& status() const noexcept { return status_; }
@@ -111,8 +78,7 @@ public:
 private:
     static void referee_thread_entry(ULONG arg);
     bool create_resources();
-    static void referee_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame,
-                                    void* user);
+    static void referee_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
 
     config cfg_{};
     TX_THREAD thread_{};
@@ -122,7 +88,6 @@ private:
     RefereeRingBuffer rx_fifo_{};
     packet_store packets_{};
     communication_status status_{};
-    msg::topic* referee_topic_ = nullptr;
     uint8_t* rx_buffer_ = nullptr;
     bool initialized_ = false;
 };

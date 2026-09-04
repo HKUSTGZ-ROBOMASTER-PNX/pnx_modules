@@ -68,23 +68,34 @@ service& service::instance()
 
 bool service::create_resources()
 {
-    remoter_topic_ = msg::create<state>();
-    if (remoter_topic_ == nullptr)
+    if (msg::init(output_) != types::status::ok)
     {
         return false;
     }
 
-    dr16_sub_ = msg::subscribe<dr16_state>();
-    vt03_sub_ = msg::subscribe<vt03_state>();
-    ps2_sub_ = msg::subscribe<ps2_state>();
-    if (!dr16_sub_.valid() || !vt03_sub_.valid() || !ps2_sub_.valid())
+    if constexpr (::config::feature::enable_dr16)
+    {
+        dr16_sub_ = msg::subscribe(dr16::instance().output());
+    }
+    if constexpr (::config::feature::enable_vt03)
+    {
+        vt03_sub_ = msg::subscribe(vt03::instance().output());
+    }
+    if constexpr (::config::feature::enable_ps2)
+    {
+        ps2_sub_ = msg::subscribe(ps2::instance().output());
+    }
+    if ((::config::feature::enable_dr16 && !dr16_sub_.valid()) ||
+        (::config::feature::enable_vt03 && !vt03_sub_.valid()) ||
+        (::config::feature::enable_ps2 && !ps2_sub_.valid()))
     {
         return false;
     }
 
     if (tx_thread_create(&thread_, const_cast<CHAR*>("remoter"), merge_thread_entry,
                          reinterpret_cast<ULONG>(this), stack_, sizeof(stack_),
-                         cfg_.thread_priority, cfg_.thread_priority, TX_NO_TIME_SLICE,
+                         params::remoter::thread_priority + 1U,
+                         params::remoter::thread_priority + 1U, TX_NO_TIME_SLICE,
                          TX_AUTO_START) != TX_SUCCESS)
     {
         return false;
@@ -93,44 +104,61 @@ bool service::create_resources()
     return true;
 }
 
-bool service::init(const config& cfg)
+types::status service::init(const config& cfg)
 {
     if (initialized_)
     {
-        return true;
+        return types::status::ok;
     }
     cfg_ = cfg;
-    if (msg::init() != types::status::ok)
+    const types::status message_status = msg::init();
+    if (message_status != types::status::ok)
     {
-        return false;
+        return message_status;
     }
 
     bool any_source = false;
-    if (::config::feature::enable_dr16 && !dr16::instance().init(cfg_.dr16))
+    if constexpr (::config::feature::enable_dr16)
     {
-        return false;
+        const types::status status = dr16::instance().init();
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_dr16;
 
-    if (::config::feature::enable_vt03 && !vt03::instance().init(cfg_.vt03))
+    if constexpr (::config::feature::enable_vt03)
     {
-        return false;
+        const types::status status = vt03::instance().init();
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_vt03;
 
-    if (::config::feature::enable_ps2 && !ps2::instance().init(cfg_.ps2))
+    if constexpr (::config::feature::enable_ps2)
     {
-        return false;
+        const types::status status = ps2::instance().init();
+        if (status != types::status::ok)
+        {
+            return status;
+        }
     }
     any_source = any_source || ::config::feature::enable_ps2;
 
-    if (!any_source || !create_resources())
+    if (!any_source)
     {
-        return false;
+        return types::status::not_configured;
+    }
+    if (!create_resources())
+    {
+        return types::status::error;
     }
 
     initialized_ = true;
-    return true;
+    return types::status::ok;
 }
 
 void service::merge_thread_entry(ULONG arg)
@@ -182,7 +210,7 @@ void service::merge_thread_entry(ULONG arg)
 
         const ULONG now = tx_time_get();
         active = choose_source(active, dr16, vt03, ps2, now,
-                               self->cfg_.offline_timeout_ticks);
+                               params::remoter::offline_timeout_ticks);
 
         switch (active)
         {
@@ -208,14 +236,12 @@ void service::merge_thread_entry(ULONG arg)
             break;
         }
 
-        output.ps2_link = ps2.data.ps2_link;
-        output.ps2_buttons = ps2.data.ps2_buttons;
-        output.ps2_pressed = ps2.data.ps2_pressed;
-        output.ps2_released = ps2.data.ps2_released;
-        output.ps2_event_count = ps2.data.ps2_event_count;
-
         output.update_count = ++update_count;
-        msg::publish(self->remoter_topic_, output);
+        msg::publish(self->output_, output);
+        if (self->cfg_.on_update_callback)
+        {
+            self->cfg_.on_update_callback(output);
+        }
         output.last_left_sw = output.left_sw;
         output.last_right_sw = output.right_sw;
         output.last_key = output.key;

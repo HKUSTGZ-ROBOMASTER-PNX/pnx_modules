@@ -76,11 +76,9 @@ struct state
 {
     bool offline = true;
     source active_source = source::none;
-    ps2_link_state ps2_link = ps2_link_state::receiver_offline;
     uint16_t ps2_buttons = 0;
     uint16_t ps2_pressed = 0;
     uint16_t ps2_released = 0;
-    uint32_t ps2_event_count = 0;
     sw_state left_sw = sw_state::low;
     sw_state right_sw = sw_state::low;
     sw_state last_left_sw = sw_state::low;
@@ -116,7 +114,12 @@ struct vt03_state
 
 struct ps2_state
 {
+    // The remoter service consumes only data. The remaining fields describe
+    // the PS2 UART link and are exposed for device-specific diagnostics.
     state data{};
+
+    ps2_link_state link = ps2_link_state::receiver_offline;
+    uint32_t button_event_count = 0;
 
     uint8_t raw_left_x = 127;
     uint8_t raw_left_y = 128;
