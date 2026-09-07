@@ -11,7 +11,7 @@ constexpr std::uint32_t spi_timeout_ms = 20U;
 constexpr std::uint32_t gpio_half_period_us = 5U;
 constexpr std::uint32_t gpio_cs_setup_us = 20U;
 constexpr std::uint32_t gpio_cs_hold_us = 20U;
-constexpr float axis_deadzone = 0.002f;
+constexpr float axis_deadzone = 0.02f;
 constexpr ULONG poll_period_ticks = 10U;
 
 constexpr bool pressed(std::uint8_t buttons, std::uint8_t bit)
