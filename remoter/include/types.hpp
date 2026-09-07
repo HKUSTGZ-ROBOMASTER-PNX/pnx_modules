@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace remoter
@@ -18,9 +19,10 @@ enum class source : uint8_t
     dr16,
     vt03,
     ps2,
+    ps2_uart,
 };
 
-enum class ps2_link_state : uint8_t
+enum class ps2_uart_link_state : uint8_t
 {
     connected = 0,
     remote_disconnected,
@@ -52,6 +54,33 @@ inline constexpr bool is_held(uint16_t buttons, ps2_button button)
     return (buttons & static_cast<uint16_t>(button)) != 0U;
 }
 
+// The legacy wireless serial receiver is deliberately distinct from the
+// synchronous PS2 source above, even though their button bit assignments match.
+enum class ps2_uart_button : uint16_t
+{
+    square = 0x8000,
+    cross = 0x4000,
+    circle = 0x2000,
+    triangle = 0x1000,
+    r1 = 0x0800,
+    l1 = 0x0400,
+    r2 = 0x0200,
+    l2 = 0x0100,
+    left = 0x0080,
+    down = 0x0040,
+    right = 0x0020,
+    up = 0x0010,
+    start = 0x0008,
+    r3 = 0x0004,
+    l3 = 0x0002,
+    select = 0x0001,
+};
+
+inline constexpr bool is_held(uint16_t buttons, ps2_uart_button button)
+{
+    return (buttons & static_cast<uint16_t>(button)) != 0U;
+}
+
 struct key_state
 {
     uint16_t W : 1;
@@ -79,6 +108,9 @@ struct state
     uint16_t ps2_buttons = 0;
     uint16_t ps2_pressed = 0;
     uint16_t ps2_released = 0;
+    uint16_t ps2_uart_buttons = 0;
+    uint16_t ps2_uart_pressed = 0;
+    uint16_t ps2_uart_released = 0;
     sw_state left_sw = sw_state::low;
     sw_state right_sw = sw_state::low;
     sw_state last_left_sw = sw_state::low;
@@ -112,13 +144,13 @@ struct vt03_state
     state data{};
 };
 
-struct ps2_state
+struct ps2_uart_state
 {
     // The remoter service consumes only data. The remaining fields describe
-    // the PS2 UART link and are exposed for device-specific diagnostics.
+    // the serial PS2-receiver link and are exposed for device-specific diagnostics.
     state data{};
 
-    ps2_link_state link = ps2_link_state::receiver_offline;
+    ps2_uart_link_state link = ps2_uart_link_state::receiver_offline;
     uint32_t button_event_count = 0;
 
     uint8_t raw_left_x = 127;
@@ -129,6 +161,24 @@ struct ps2_state
     uint32_t frame_count = 0;
     uint32_t signal_count = 0;
     uint32_t last_signal_tick = 0;
+};
+
+struct ps2_raw_frame
+{
+    std::array<uint8_t, 9> bytes{};
+};
+
+struct ps2_state
+{
+    state data{};
+    ps2_raw_frame raw{};
+    bool frame_valid = false;
+    uint8_t controller_id = 0U;
+    uint32_t poll_count = 0U;
+    uint32_t valid_frame_count = 0U;
+    uint32_t error_count = 0U;
+    uint32_t signal_count = 0U;
+    uint32_t last_signal_tick = 0U;
 };
 
 inline sw_state map_switch(uint8_t raw)

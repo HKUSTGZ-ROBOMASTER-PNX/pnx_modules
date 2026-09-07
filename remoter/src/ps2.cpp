@@ -1,206 +1,232 @@
-#include "remoter.hpp"
+#include "ps2.hpp"
 
-#include "bsp_dma.hpp"
-#include "memory.h"
-
-#include <algorithm>
-#include <cmath>
-#include <cstring>
+#include "bsp_dwt.hpp"
 
 namespace remoter
 {
 namespace
 {
 
-constexpr std::size_t ps2_dma_buffer_size = 32;
-constexpr std::size_t ps2_frame_size = 8;
-constexpr uint8_t frame_header = 0x0D;
-constexpr uint8_t frame_tail = 0x0A;
-constexpr uint8_t remote_disconnected_byte = 0xAB;
-constexpr uint8_t axis_x_center = 127;
-constexpr uint8_t axis_y_center = 128;
+constexpr std::uint32_t spi_timeout_ms = 20U;
+constexpr std::uint32_t gpio_half_period_us = 5U;
+constexpr std::uint32_t gpio_cs_setup_us = 20U;
+constexpr std::uint32_t gpio_cs_hold_us = 20U;
+constexpr float axis_deadzone = 0.002f;
+constexpr ULONG poll_period_ticks = 10U;
 
-bsp::dma::buffer<ps2_dma_buffer_size> rx_buffer_storage BSP_DMA_BUFFER{};
-
-struct ps2_uart_frame
+constexpr bool pressed(std::uint8_t buttons, std::uint8_t bit)
 {
-    uint8_t header;
-    uint8_t button_high;
-    uint8_t button_low;
-    uint8_t left_y;
-    uint8_t left_x;
-    uint8_t right_y;
-    uint8_t right_x;
-    uint8_t tail;
-};
+    return (buttons & static_cast<std::uint8_t>(1U << bit)) == 0U;
+}
 
-static_assert(sizeof(ps2_uart_frame) == ps2_frame_size);
+constexpr bool analog_id(std::uint8_t id)
+{
+    return id == 0x53U || id == 0x73U;
+}
 
-float normalize_axis(uint8_t raw, uint8_t center)
+constexpr float normalize_axis(std::uint8_t raw, std::uint8_t center)
 {
     if (raw >= center)
     {
-        return static_cast<float>(raw - center) /
-               static_cast<float>(UINT8_MAX - center);
+        return static_cast<float>(raw - center) / static_cast<float>(UINT8_MAX - center);
     }
     return -static_cast<float>(center - raw) / static_cast<float>(center);
 }
 
-void apply_stick_deadzone(float& x, float& y, float deadzone)
+constexpr float apply_axis_deadzone(float value)
 {
-    const float magnitude = std::max(std::fabs(x), std::fabs(y));
-    if (magnitude <= deadzone)
-    {
-        x = 0.0f;
-        y = 0.0f;
-        return;
-    }
-
-    const float scaled_magnitude = (magnitude - deadzone) / (1.0f - deadzone);
-    const float scale = scaled_magnitude / magnitude;
-    x *= scale;
-    y *= scale;
+    return value > -axis_deadzone && value < axis_deadzone ? 0.0f : value;
 }
 
-std::size_t retain_frame_suffix(uint8_t* bytes, std::size_t size)
+uint16_t buttons_from(const ps2_controller_state& input)
 {
-    for (std::size_t i = size; i > 1U; --i)
-    {
-        const std::size_t index = i - 1U;
-        if (bytes[index] == frame_header)
+    uint16_t buttons = 0U;
+    const auto set = [&buttons](bool held, ps2_button button) {
+        if (held)
         {
-            const std::size_t retained = size - index;
-            std::memmove(bytes, bytes + index, retained);
-            return retained;
+            buttons |= static_cast<uint16_t>(button);
         }
-    }
-    return 0;
+    };
+    set(input.select, ps2_button::select);
+    set(input.l3, ps2_button::l3);
+    set(input.r3, ps2_button::r3);
+    set(input.start, ps2_button::start);
+    set(input.up, ps2_button::up);
+    set(input.right, ps2_button::right);
+    set(input.down, ps2_button::down);
+    set(input.left, ps2_button::left);
+    set(input.l2, ps2_button::l2);
+    set(input.r2, ps2_button::r2);
+    set(input.l1, ps2_button::l1);
+    set(input.r1, ps2_button::r1);
+    set(input.triangle, ps2_button::triangle);
+    set(input.circle, ps2_button::circle);
+    set(input.cross, ps2_button::cross);
+    set(input.square, ps2_button::square);
+    return buttons;
 }
 
-void set_disconnected(ps2_state& message, ps2_link_state link, ULONG now,
-                      bool signal_received)
+class transport_ref
 {
-    const uint16_t previous_buttons = message.data.ps2_buttons;
-    if (signal_received)
+public:
+    transport_ref(void* context,
+                  types::status (*transfer)(void*, const std::uint8_t*, std::uint8_t*, std::size_t))
+        : context_(context), transfer_(transfer)
     {
-        ++message.signal_count;
-        message.last_signal_tick = static_cast<uint32_t>(now);
     }
 
-    message.data = {};
-    message.data.offline = true;
-    message.data.active_source = source::ps2;
-    message.data.ps2_released = previous_buttons;
-    message.link = link;
-    if (previous_buttons != 0U)
+    types::status transfer(const std::uint8_t* tx, std::uint8_t* rx, std::size_t size)
     {
-        ++message.button_event_count;
+        return transfer_(context_, tx, rx, size);
     }
-    message.raw_left_x = axis_x_center;
-    message.raw_left_y = axis_y_center;
-    message.raw_right_x = axis_x_center;
-    message.raw_right_y = axis_y_center;
-}
 
-void set_connected(ps2_state& message, const ps2_uart_frame& frame, float deadzone,
-                   ULONG now)
-{
-    const uint16_t previous_buttons = message.data.ps2_buttons;
-    const uint16_t current_buttons =
-        (static_cast<uint16_t>(frame.button_high) << 8U) |
-        static_cast<uint16_t>(frame.button_low);
-
-    state output{};
-    output.offline = false;
-    output.active_source = source::ps2;
-    output.ps2_buttons = current_buttons;
-    output.ps2_pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
-    output.ps2_released = previous_buttons & static_cast<uint16_t>(~current_buttons);
-    if (output.ps2_pressed != 0U || output.ps2_released != 0U)
-    {
-        ++message.button_event_count;
-    }
-    output.last_left_sw = message.data.left_sw;
-    output.last_right_sw = message.data.right_sw;
-    output.last_key = message.data.key;
-    output.left_x = normalize_axis(frame.left_x, axis_x_center);
-    output.left_y = -normalize_axis(frame.left_y, axis_y_center);
-    output.right_x = normalize_axis(frame.right_x, axis_x_center);
-    output.right_y = -normalize_axis(frame.right_y, axis_y_center);
-    apply_stick_deadzone(output.left_x, output.left_y, deadzone);
-    apply_stick_deadzone(output.right_x, output.right_y, deadzone);
-    output.wheel = 0.0f;
-
-    message.data = output;
-    message.link = ps2_link_state::connected;
-    message.raw_left_x = frame.left_x;
-    message.raw_left_y = frame.left_y;
-    message.raw_right_x = frame.right_x;
-    message.raw_right_y = frame.right_y;
-    ++message.frame_count;
-    ++message.signal_count;
-    message.last_signal_tick = static_cast<uint32_t>(now);
-}
+private:
+    void* context_;
+    types::status (*transfer_)(void*, const std::uint8_t*, std::uint8_t*, std::size_t);
+};
 
 } // namespace
 
-ps2& ps2::instance()
+types::status ps2_protocol::decode(const ps2_raw_frame& raw, ps2_controller_state& out) noexcept
 {
-    static ps2 inst;
-    return inst;
+    if (raw.bytes[0] != 0xFFU || !analog_id(raw.bytes[1]) || raw.bytes[2] != 0x5AU)
+    {
+        return types::status::error;
+    }
+
+    const std::uint8_t btn1 = raw.bytes[3];
+    const std::uint8_t btn2 = raw.bytes[4];
+    ps2_controller_state decoded{};
+    decoded.select = pressed(btn1, 0U);
+    decoded.l3 = pressed(btn1, 1U);
+    decoded.r3 = pressed(btn1, 2U);
+    decoded.start = pressed(btn1, 3U);
+    decoded.up = pressed(btn1, 4U);
+    decoded.right = pressed(btn1, 5U);
+    decoded.down = pressed(btn1, 6U);
+    decoded.left = pressed(btn1, 7U);
+    decoded.l2 = pressed(btn2, 0U);
+    decoded.r2 = pressed(btn2, 1U);
+    decoded.l1 = pressed(btn2, 2U);
+    decoded.r1 = pressed(btn2, 3U);
+    decoded.triangle = pressed(btn2, 4U);
+    decoded.circle = pressed(btn2, 5U);
+    decoded.cross = pressed(btn2, 6U);
+    decoded.square = pressed(btn2, 7U);
+    decoded.rx = apply_axis_deadzone(normalize_axis(raw.bytes[5], 127U));
+    decoded.ry = apply_axis_deadzone(-normalize_axis(raw.bytes[6], 128U));
+    decoded.lx = apply_axis_deadzone(normalize_axis(raw.bytes[7], 127U));
+    decoded.ly = apply_axis_deadzone(-normalize_axis(raw.bytes[8], 128U));
+    out = decoded;
+    return types::status::ok;
+}
+
+types::status ps2_spi::init()
+{
+    const types::status status = bsp::spi::init(spi_bus_);
+    return status == types::status::ok ? bsp::gpio::set_active(cs_, false) : status;
+}
+
+types::status ps2_spi::transfer(const std::uint8_t* tx, std::uint8_t* rx, std::size_t size)
+{
+    if (tx == nullptr || rx == nullptr || size == 0U)
+    {
+        return types::status::invalid_arg;
+    }
+    types::status status = bsp::gpio::set_active(cs_, true);
+    if (status == types::status::ok)
+    {
+        status = bsp::spi::transmit_receive(spi_bus_, tx, rx, size, spi_timeout_ms);
+    }
+    const types::status release_status = bsp::gpio::set_active(cs_, false);
+    return status == types::status::ok ? release_status : status;
+}
+
+types::status ps2_gpio::init()
+{
+    if (!bsp::dwt::initialized())
+    {
+        const types::status status = bsp::dwt::init();
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+    }
+    types::status status = bsp::gpio::set_active(cs_, false);
+    if (status == types::status::ok)
+    {
+        status = bsp::gpio::write(clk_, true);
+    }
+    return status == types::status::ok ? bsp::gpio::write(cmd_, true) : status;
+}
+
+types::status ps2_gpio::transfer_byte(std::uint8_t tx, std::uint8_t& rx)
+{
+    rx = 0U;
+    for (std::uint8_t bit = 0U; bit < 8U; ++bit)
+    {
+        types::status status = bsp::gpio::write(cmd_, (tx & (1U << bit)) != 0U);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+        bsp::dwt::delay_us(gpio_half_period_us);
+        status = bsp::gpio::write(clk_, false);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+        bsp::dwt::delay_us(gpio_half_period_us);
+        bool data_high = false;
+        status = bsp::gpio::read(data_, data_high);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+        if (data_high)
+        {
+            rx = static_cast<std::uint8_t>(rx | (1U << bit));
+        }
+        status = bsp::gpio::write(clk_, true);
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+        bsp::dwt::delay_us(gpio_half_period_us);
+    }
+    return types::status::ok;
+}
+
+types::status ps2_gpio::transfer(const std::uint8_t* tx, std::uint8_t* rx, std::size_t size)
+{
+    if (tx == nullptr || rx == nullptr || size == 0U)
+    {
+        return types::status::invalid_arg;
+    }
+    types::status status = bsp::gpio::set_active(cs_, true);
+    if (status == types::status::ok)
+    {
+        bsp::dwt::delay_us(gpio_cs_setup_us);
+        for (std::size_t index = 0U; index < size && status == types::status::ok; ++index)
+        {
+            status = transfer_byte(tx[index], rx[index]);
+        }
+        bsp::dwt::delay_us(gpio_cs_hold_us);
+    }
+    const types::status release_status = bsp::gpio::set_active(cs_, false);
+    return status == types::status::ok ? release_status : status;
 }
 
 bool ps2::create_resources()
 {
-    if (tx_semaphore_create(&rx_sem_, const_cast<CHAR*>("ps2_rx"), 0) != TX_SUCCESS)
-    {
-        return false;
-    }
-
     if (msg::init(output_) != types::status::ok)
     {
         return false;
     }
-
-    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
-    std::memset(stream_buffer_, 0, sizeof(stream_buffer_));
-    rx_buffer_ = rx_buffer_storage.data();
-    stream_head_ = 0;
-    stream_tail_ = 0;
-    stream_overflow_ = false;
-
-    const bsp::usart::line_config line_config{
-        9600,
-        bsp::usart::word_length::bits_8,
-        bsp::usart::stop_bits::one,
-        bsp::usart::parity::none,
-        true,
-        true,
-    };
-    if (bsp::usart::configure(cfg_.uart_port, line_config) != types::status::ok)
-    {
-        return false;
-    }
-    if (bsp::usart::init(cfg_.uart_port, bsp::usart::mode::dma) != types::status::ok)
-    {
-        return false;
-    }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
-                                     bsp::usart::rx_callback::bind<ps2, &ps2::ps2_rx_callback>(this),
-                                     nullptr) != types::status::ok)
-    {
-        return false;
-    }
-
-    if (tx_thread_create(&thread_, const_cast<CHAR*>("ps2"), ps2_thread_entry,
-                         reinterpret_cast<ULONG>(this), stack_, sizeof(stack_),
-                         cfg_.thread_priority, cfg_.thread_priority, TX_NO_TIME_SLICE,
-                         TX_AUTO_START) != TX_SUCCESS)
-    {
-        return false;
-    }
-
-    return true;
+    return tx_thread_create(&thread_, const_cast<CHAR*>("ps2"), poll_thread_entry,
+                            reinterpret_cast<ULONG>(this), stack_, sizeof(stack_),
+                            cfg_.thread_priority, cfg_.thread_priority, TX_NO_TIME_SLICE,
+                            TX_AUTO_START) == TX_SUCCESS;
 }
 
 types::status ps2::init(const ps2_config& cfg)
@@ -209,17 +235,20 @@ types::status ps2::init(const ps2_config& cfg)
     {
         return types::status::ok;
     }
-    if (cfg.receiver_offline_timeout_ticks == 0U || cfg.frame_timeout_ticks == 0U ||
-        cfg.deadzone < 0.0f || cfg.deadzone >= 1.0f)
+    if (transport_ == nullptr || init_transport_ == nullptr || transfer_ == nullptr)
     {
-        return types::status::invalid_arg;
+        return types::status::not_configured;
     }
-
     cfg_ = cfg;
     const types::status message_status = msg::init();
     if (message_status != types::status::ok)
     {
         return message_status;
+    }
+    const types::status status = init_transport_(transport_);
+    if (status != types::status::ok)
+    {
+        return status;
     }
     if (!create_resources())
     {
@@ -229,126 +258,51 @@ types::status ps2::init(const ps2_config& cfg)
     return types::status::ok;
 }
 
-void ps2::ps2_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
+types::status ps2::poll_once(ps2_state& message)
 {
-    if (frame.data == nullptr || frame.len == 0U)
+    ps2_controller_state controller{};
+    transport_ref transport{transport_, transfer_};
+    const types::status status = ps2_protocol::poll(transport, controller, &message.raw);
+    message.controller_id = message.raw.bytes[1];
+    ++message.poll_count;
+    if (status != types::status::ok)
     {
-        return;
+        message.frame_valid = false;
+        ++message.error_count;
+        return status;
     }
 
-    for (std::size_t i = 0; i < frame.len; ++i)
-    {
-        const std::size_t next = (stream_head_ + 1U) % stream_buffer_size;
-        if (next == stream_tail_)
-        {
-            stream_overflow_ = true;
-            break;
-        }
-        stream_buffer_[stream_head_] = frame.data[i];
-        stream_head_ = next;
-    }
-    tx_semaphore_put(&rx_sem_);
+    const uint16_t previous_buttons = message.data.ps2_buttons;
+    const uint16_t current_buttons = buttons_from(controller);
+    state output{};
+    output.offline = false;
+    output.active_source = source::ps2;
+    output.ps2_buttons = current_buttons;
+    output.ps2_pressed = current_buttons & static_cast<uint16_t>(~previous_buttons);
+    output.ps2_released = previous_buttons & static_cast<uint16_t>(~current_buttons);
+    output.left_x = controller.lx;
+    output.left_y = controller.ly;
+    output.right_x = controller.rx;
+    output.right_y = controller.ry;
+    message.data = output;
+    message.frame_valid = true;
+    ++message.valid_frame_count;
+    ++message.signal_count;
+    message.last_signal_tick = static_cast<uint32_t>(tx_time_get());
+    return types::status::ok;
 }
 
-void ps2::ps2_thread_entry(ULONG arg)
+void ps2::poll_thread_entry(ULONG arg)
 {
     auto* self = reinterpret_cast<ps2*>(arg);
-    if (self == nullptr)
-    {
-        self = &instance();
-    }
-
-    ps2_state raw_msg{};
-    set_disconnected(raw_msg, ps2_link_state::receiver_offline, tx_time_get(), false);
-    msg::publish(self->output_, raw_msg);
-
-    ps2_uart_frame candidate{};
-    std::size_t candidate_size = 0;
-    ULONG candidate_tick = 0;
-    ULONG last_signal_tick = tx_time_get();
-
+    ps2_state message{};
+    message.data.offline = true;
+    message.data.active_source = source::ps2;
     for (;;)
     {
-        tx_semaphore_get(&self->rx_sem_, self->cfg_.frame_timeout_ticks);
-        const ULONG now = tx_time_get();
-
-        if (candidate_size != 0U &&
-            (now - candidate_tick) > self->cfg_.frame_timeout_ticks)
-        {
-            candidate_size = 0;
-        }
-
-        uint8_t bytes[stream_buffer_size]{};
-        std::size_t byte_count = 0;
-        bool overflow = false;
-
-        TX_INTERRUPT_SAVE_AREA
-        TX_DISABLE
-        overflow = self->stream_overflow_;
-        self->stream_overflow_ = false;
-        while (self->stream_tail_ != self->stream_head_ && byte_count < stream_buffer_size)
-        {
-            bytes[byte_count++] = self->stream_buffer_[self->stream_tail_];
-            self->stream_tail_ = (self->stream_tail_ + 1U) % stream_buffer_size;
-        }
-        TX_RESTORE
-
-        if (overflow)
-        {
-            candidate_size = 0;
-        }
-
-        auto* candidate_bytes = reinterpret_cast<uint8_t*>(&candidate);
-        for (std::size_t i = 0; i < byte_count; ++i)
-        {
-            const uint8_t byte = bytes[i];
-            if (candidate_size == 0U)
-            {
-                if (byte == frame_header)
-                {
-                    candidate_bytes[0] = byte;
-                    candidate_size = 1;
-                    candidate_tick = now;
-                }
-                else if (byte == remote_disconnected_byte)
-                {
-                    set_disconnected(raw_msg, ps2_link_state::remote_disconnected, now, true);
-                    last_signal_tick = now;
-                    msg::publish(self->output_, raw_msg);
-                }
-                continue;
-            }
-
-            candidate_bytes[candidate_size++] = byte;
-            candidate_tick = now;
-            if (candidate_size < ps2_frame_size)
-            {
-                continue;
-            }
-
-            if (candidate.header == frame_header && candidate.tail == frame_tail)
-            {
-                set_connected(raw_msg, candidate, self->cfg_.deadzone, now);
-                last_signal_tick = now;
-                msg::publish(self->output_, raw_msg);
-                candidate_size = 0;
-            }
-            else
-            {
-                candidate_size = retain_frame_suffix(candidate_bytes, candidate_size);
-                if (candidate_size != 0U)
-                {
-                    candidate_tick = now;
-                }
-            }
-        }
-
-        if ((now - last_signal_tick) > self->cfg_.receiver_offline_timeout_ticks &&
-            raw_msg.link != ps2_link_state::receiver_offline)
-        {
-            set_disconnected(raw_msg, ps2_link_state::receiver_offline, now, false);
-            msg::publish(self->output_, raw_msg);
-        }
+        self->poll_once(message);
+        msg::publish(self->output_, message);
+        tx_thread_sleep(poll_period_ticks);
     }
 }
 

@@ -1,5 +1,6 @@
 #include "remoter.hpp"
 
+#include "bsp_bindings.hpp"
 #include "config.hpp"
 #include "types.hpp"
 
@@ -24,12 +25,14 @@ source choose_source(source active,
                      const source_cache& dr16,
                      const source_cache& vt03,
                      const source_cache& ps2,
+                     const source_cache& ps2_uart,
                      ULONG now,
                      ULONG timeout_ticks)
 {
     const bool dr16_online = source_online(dr16, now, timeout_ticks);
     const bool vt03_online = source_online(vt03, now, timeout_ticks);
     const bool ps2_online = source_online(ps2, now, timeout_ticks);
+    const bool ps2_uart_online = source_online(ps2_uart, now, timeout_ticks);
 
     if (active == source::dr16 && dr16_online)
     {
@@ -40,6 +43,10 @@ source choose_source(source active,
         return active;
     }
     if (active == source::ps2 && ps2_online)
+    {
+        return active;
+    }
+    if (active == source::ps2_uart && ps2_uart_online)
     {
         return active;
     }
@@ -54,6 +61,10 @@ source choose_source(source active,
     if (ps2_online)
     {
         return source::ps2;
+    }
+    if (ps2_uart_online)
+    {
+        return source::ps2_uart;
     }
     return source::none;
 }
@@ -81,13 +92,21 @@ bool service::create_resources()
     {
         vt03_sub_ = msg::subscribe(vt03::instance().output());
     }
-    if constexpr (::config::feature::enable_ps2)
+#if ENABLE_PS2
+    ps2_sub_ = msg::subscribe(binding::ps2_instance().output());
+#endif
+    if constexpr (::config::feature::enable_ps2_uart)
     {
-        ps2_sub_ = msg::subscribe(ps2::instance().output());
+        ps2_uart_sub_ = msg::subscribe(ps2_uart::instance().output());
     }
-    if ((::config::feature::enable_dr16 && !dr16_sub_.valid()) ||
-        (::config::feature::enable_vt03 && !vt03_sub_.valid()) ||
-        (::config::feature::enable_ps2 && !ps2_sub_.valid()))
+    bool sources_ready =
+        (!::config::feature::enable_dr16 || dr16_sub_.valid()) &&
+        (!::config::feature::enable_vt03 || vt03_sub_.valid()) &&
+        (!::config::feature::enable_ps2_uart || ps2_uart_sub_.valid());
+#if ENABLE_PS2
+    sources_ready = sources_ready && ps2_sub_.valid();
+#endif
+    if (!sources_ready)
     {
         return false;
     }
@@ -138,15 +157,26 @@ types::status service::init(const config& cfg)
     }
     any_source = any_source || ::config::feature::enable_vt03;
 
-    if constexpr (::config::feature::enable_ps2)
+#if ENABLE_PS2
     {
-        const types::status status = ps2::instance().init();
+        const types::status status = binding::ps2_instance().init();
         if (status != types::status::ok)
         {
             return status;
         }
     }
+#endif
     any_source = any_source || ::config::feature::enable_ps2;
+
+    if constexpr (::config::feature::enable_ps2_uart)
+    {
+        const types::status status = ps2_uart::instance().init();
+        if (status != types::status::ok)
+        {
+            return status;
+        }
+    }
+    any_source = any_source || ::config::feature::enable_ps2_uart;
 
     if (!any_source)
     {
@@ -172,6 +202,7 @@ void service::merge_thread_entry(ULONG arg)
     source_cache dr16{};
     source_cache vt03{};
     source_cache ps2{};
+    source_cache ps2_uart{};
     state output{};
     source active = source::none;
     uint32_t update_count = 0;
@@ -208,8 +239,18 @@ void service::merge_thread_entry(ULONG arg)
             }
         }
 
+        {
+            ps2_uart_state ps2_uart_msg{};
+            if (msg::read(self->ps2_uart_sub_, ps2_uart_msg) == types::status::ok)
+            {
+                ps2_uart.data = ps2_uart_msg.data;
+                ps2_uart.tick = tx_time_get();
+                ps2_uart.seen = true;
+            }
+        }
+
         const ULONG now = tx_time_get();
-        active = choose_source(active, dr16, vt03, ps2, now,
+        active = choose_source(active, dr16, vt03, ps2, ps2_uart, now,
                                params::remoter::offline_timeout_ticks);
 
         switch (active)
@@ -226,6 +267,11 @@ void service::merge_thread_entry(ULONG arg)
             break;
         case source::ps2:
             output = ps2.data;
+            output.active_source = active;
+            output.offline = false;
+            break;
+        case source::ps2_uart:
+            output = ps2_uart.data;
             output.active_source = active;
             output.offline = false;
             break;

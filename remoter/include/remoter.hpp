@@ -4,6 +4,7 @@
 #include "callback.hpp"
 #include "config.hpp"
 #include "msg.hpp"
+#include "ps2.hpp"
 #include "types.hpp"
 #include "tx_api.h"
 
@@ -30,13 +31,13 @@ struct vt03_config
     std::uint32_t thread_priority = params::remoter::thread_priority;
 };
 
-struct ps2_config
+struct ps2_uart_config
 {
-    bsp::usart::port uart_port = app::uart::ps2;
+    bsp::usart::port uart_port = app::uart::ps2_uart;
     std::uint32_t thread_priority = params::remoter::thread_priority;
-    std::uint32_t receiver_offline_timeout_ticks = params::remoter::ps2_offline_timeout_ticks;
-    std::uint32_t frame_timeout_ticks = params::remoter::ps2_frame_timeout_ticks;
-    float deadzone = params::remoter::ps2_deadzone;
+    std::uint32_t receiver_offline_timeout_ticks = params::remoter::ps2_uart_offline_timeout_ticks;
+    std::uint32_t frame_timeout_ticks = params::remoter::ps2_uart_frame_timeout_ticks;
+    float deadzone = params::remoter::ps2_uart_deadzone;
 };
 
 struct config
@@ -101,22 +102,22 @@ private:
     bool initialized_ = false;
 };
 
-class ps2
+class ps2_uart
 {
 public:
-    static ps2& instance();
+    static ps2_uart& instance();
 
-    types::status init(const ps2_config& cfg = {});
-    msg::channel<ps2_state>& output() noexcept { return output_; }
+    types::status init(const ps2_uart_config& cfg = {});
+    msg::channel<ps2_uart_state>& output() noexcept { return output_; }
 
 private:
     static constexpr std::size_t stream_buffer_size = 64;
 
-    static void ps2_thread_entry(ULONG arg);
-    void ps2_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
+    static void ps2_uart_thread_entry(ULONG arg);
+    void ps2_uart_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
     bool create_resources();
 
-    ps2_config cfg_{};
+    ps2_uart_config cfg_{};
     TX_THREAD thread_{};
     TX_SEMAPHORE rx_sem_{};
     alignas(8) std::uint8_t stack_[768]{};
@@ -126,7 +127,7 @@ private:
     volatile std::size_t stream_head_ = 0;
     volatile std::size_t stream_tail_ = 0;
     volatile bool stream_overflow_ = false;
-    msg::channel<ps2_state> output_{};
+    msg::channel<ps2_uart_state> output_{};
     bool initialized_ = false;
 };
 
@@ -150,6 +151,7 @@ private:
     msg::subscriber dr16_sub_{};
     msg::subscriber vt03_sub_{};
     msg::subscriber ps2_sub_{};
+    msg::subscriber ps2_uart_sub_{};
     bool initialized_ = false;
 };
 
