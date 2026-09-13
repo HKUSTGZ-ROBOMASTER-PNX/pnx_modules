@@ -1,19 +1,24 @@
 #pragma once
 
-#include "bmi088.hpp"
 #include "config.hpp"
+#if HAS_AHRS
+#include "bmi088.hpp"
+#include "quaternion_ekf.hpp"
+#include "tactical_ekf.hpp"
+#endif
 #if HAS_DMIMU
 #include "dmimu.hpp"
 #endif
+#include "imu.hpp"
 #include "msg.hpp"
-#include "quaternion_ekf.hpp"
 #include "runtime_monitor.hpp"
-#include "tactical_ekf.hpp"
 #include "tx_api.h"
+#include <type_traits>
 
 namespace ahrs
 {
 
+#if HAS_AHRS
 struct config
 {
     // Robot defaults come from params; callers may still override individual
@@ -22,6 +27,8 @@ struct config
     uint32_t imu_thread_priority = params::ahrs::imu_thread_priority;
     uint32_t temp_thread_priority = params::ahrs::temp_thread_priority;
     float target_temp = params::ahrs::target_temp;
+    // Post-update sleep gives lower-priority threads CPU time under sustained DRDY load.
+    uint32_t loop_sleep_ticks = params::ahrs::loop_sleep_ticks;
     bool temperature_control_enabled = true;
 };
 
@@ -62,9 +69,19 @@ struct telemetry
     float roll = 0.0f;
     float total_yaw = 0.0f;
     tactical::diagnostics tactical{};
+    // TEMP_IMU_DWT: remove after profiling. Elapsed time includes preemption.
+    float temp_dwt_read_us = 0;
+    float temp_dwt_quaternion_us = 0;
+    float temp_dwt_tactical_us = 0;
+    float temp_dwt_round_us = 0;
+    float temp_dwt_round_min_us = 0;
+    float temp_dwt_round_max_us = 0;
+    float temp_dwt_round_avg_us = 0;
+    uint32_t temp_dwt_count = 0;
 };
 
 extern "C" telemetry ahrs_debug_telemetry;
+#endif
 
 #if HAS_DMIMU
 struct dmimu_service_config
@@ -99,6 +116,7 @@ struct dmimu_telemetry
 extern "C" dmimu_telemetry dmimu_debug_telemetry;
 #endif
 
+#if HAS_AHRS
 class service
 {
 public:
@@ -115,7 +133,7 @@ private:
     void gyro_data_ready_callback();
     bool create_resources();
     void wait_for_gyro_data_ready();
-    void fill_state(imu::state& output, const quaternion_ekf& ekf,
+    void fill_state(imu::state& output,
                     const imu::reading& reading);
 
     config cfg_{};
@@ -125,17 +143,17 @@ private:
     TX_SEMAPHORE heartbeat_sem_{};
     TX_SEMAPHORE gyro_data_ready_sem_{};
 
-    // The IMU thread owns both the production quaternion EKF and the shadow
-    // Tactical ESKF.  Their covariance workspaces are intentionally local to
-    // this thread, so reserve enough DTCM stack for their peak update frames.
+    // Keep the established stack budget for either selected solver's update frames.
     alignas(8) uint8_t imu_stack_[8192]{};
 
     msg::channel<imu::state> output_{};
     telemetry& telemetry_ = ahrs_debug_telemetry;
-    tactical::ekf tactical_ekf_{};
+    std::conditional_t<params::ahrs::use_tactical, tactical::ekf, quaternion_ekf> solver_{};
     runtime::monitor imu_loop_monitor_{500U};
     bool initialized_ = false;
 };
+
+#endif
 
 #if HAS_DMIMU
 class dmimu_service

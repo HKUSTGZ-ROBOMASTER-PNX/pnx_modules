@@ -10,7 +10,9 @@ namespace ahrs
 {
 
 extern "C" {
+#if HAS_AHRS
 telemetry ahrs_debug_telemetry{};
+#endif
 #if HAS_DMIMU
 dmimu_telemetry dmimu_debug_telemetry{};
 #endif
@@ -19,6 +21,7 @@ dmimu_telemetry dmimu_debug_telemetry{};
 namespace
 {
 
+#if HAS_AHRS
 uint32_t ins_count = 0;
 
 float solve_delta_s(uint32_t* last)
@@ -47,13 +50,19 @@ float vector_norm(float x, float y, float z)
     return std::sqrt(x * x + y * y + z * z);
 }
 
+#endif
+
+#if HAS_DMIMU
 constexpr float degrees_to_radians(float degrees)
 {
     return degrees * (math::pi / 180.0f);
 }
 
+#endif
+
 } // namespace
 
+#if HAS_AHRS
 service& service::instance()
 {
     static service inst;
@@ -123,14 +132,14 @@ types::status service::init(const config& cfg)
     return types::status::ok;
 }
 
-void service::fill_state(imu::state& output, const quaternion_ekf& ekf,
+void service::fill_state(imu::state& output,
                          const imu::reading& reading)
 {
-    std::memcpy(output.quaternion, ekf.q, sizeof(ekf.q));
-    output.yaw = ekf.yaw;
-    output.pitch = ekf.pitch;
-    output.roll = ekf.roll;
-    output.total_yaw = ekf.total_yaw;
+    std::memcpy(output.quaternion, telemetry_.quaternion, sizeof(telemetry_.quaternion));
+    output.yaw = telemetry_.yaw;
+    output.pitch = telemetry_.pitch;
+    output.roll = telemetry_.roll;
+    output.total_yaw = telemetry_.total_yaw;
     output.gyro_r = reading.gyro.x;
     output.gyro_p = reading.gyro.y;
     output.gyro_y = reading.gyro.z;
@@ -168,8 +177,7 @@ void service::imu_thread_entry(ULONG arg)
 
     imu::state output{};
     imu::reading reading{};
-    quaternion_ekf ekf;
-    self->tactical_ekf_.reset();
+    self->solver_.reset();
 
     self->imu_.test.acc_chip_id_err = true;
     self->imu_.test.acc_data_err = true;
@@ -218,10 +226,20 @@ void service::imu_thread_entry(ULONG arg)
     for (;;)
     {
         self->wait_for_gyro_data_ready();
+        // TEMP_IMU_DWT: cycle-counter timestamps, excluding DRDY wait and sleep.
+        uint32_t timing_round = 0;
+        bsp::dwt::delta_s(&timing_round);
+        uint32_t timing_phase = timing_round;
+        auto& timing = self->telemetry_;
+        timing.temp_dwt_read_us = 0;
+        timing.temp_dwt_quaternion_us = 0;
+        timing.temp_dwt_tactical_us = 0;
         self->imu_loop_monitor_.begin();
         if (!self->imu_.test.init_err)
         {
+            bsp::dwt::delta_s(&timing_phase); // TEMP_IMU_DWT
             self->telemetry_.read_ok = self->imu_.read(reading);
+            timing.temp_dwt_read_us = bsp::dwt::delta_s(&timing_phase) * 1.0e6f;
             self->telemetry_.imu_spi_read_error_count = self->imu_.spi_read_error_count();
             self->telemetry_.imu_spi_write_error_count = self->imu_.spi_write_error_count();
             self->telemetry_.imu_spi_lock_error_count = self->imu_.spi_lock_error_count();
@@ -236,41 +254,80 @@ void service::imu_thread_entry(ULONG arg)
                     reading.accel.x += self->cfg_.imu_offset_x * reading.gyro.z * reading.gyro.z;
                 }
                 const float dt = solve_delta_s(&ins_count);
-                ekf.update_kalman(reading.gyro.x, reading.gyro.y, reading.gyro.z,
-                                  reading.accel.x, reading.accel.y, reading.accel.z,
-                                  dt);
-                self->tactical_ekf_.update(reading.gyro.x, reading.gyro.y, reading.gyro.z,
-                                           reading.accel.x, reading.accel.y, reading.accel.z,
-                                           dt);
+                bsp::dwt::delta_s(&timing_phase); // TEMP_IMU_DWT
+                // Template branch discards the unselected solver at compile time.
+                auto update_solver = [&](auto& solver) {
+                    using solver_type = std::decay_t<decltype(solver)>;
+                    if constexpr (std::is_same_v<solver_type, quaternion_ekf>)
+                    {
+                        solver.update_kalman(reading.gyro.x, reading.gyro.y, reading.gyro.z,
+                                             reading.accel.x, reading.accel.y, reading.accel.z, dt);
+                        timing.temp_dwt_quaternion_us = bsp::dwt::delta_s(&timing_phase) * 1.0e6f;
+                        std::memcpy(timing.quaternion, solver.q, sizeof(solver.q));
+                        timing.yaw = solver.yaw;
+                        timing.pitch = solver.pitch;
+                        timing.roll = solver.roll;
+                        timing.total_yaw = solver.total_yaw;
+                        timing.update_count = solver.UpdateCount;
+                    }
+                    else
+                    {
+                        solver.update(reading.gyro.x, reading.gyro.y, reading.gyro.z,
+                                      reading.accel.x, reading.accel.y, reading.accel.z, dt);
+                        timing.temp_dwt_tactical_us = bsp::dwt::delta_s(&timing_phase) * 1.0e6f;
+                        const auto& result = solver.state();
+                        if (timing.update_count == 0U)
+                            timing.total_yaw = result.yaw;
+                        else
+                            timing.total_yaw += std::remainder(result.yaw - timing.yaw, 6.28318530718f);
+                        std::memcpy(timing.quaternion, result.quaternion, sizeof(result.quaternion));
+                        timing.yaw = result.yaw;
+                        timing.pitch = result.pitch;
+                        timing.roll = result.roll;
+                        timing.update_count = result.update_count;
+                        timing.tactical = result;
+                    }
+                };
                 update_dt_telemetry(self->telemetry_, dt);
-                self->telemetry_.solved = ekf.UpdateCount > 0U;
-                self->telemetry_.update_count = static_cast<uint32_t>(ekf.UpdateCount);
+                update_solver(self->solver_);
+                timing.solved = timing.update_count > 0U;
                 self->telemetry_.temperature = reading.temperature;
                 self->telemetry_.accel_norm = vector_norm(reading.accel.x, reading.accel.y, reading.accel.z);
                 self->telemetry_.gyro_norm = vector_norm(reading.gyro.x, reading.gyro.y, reading.gyro.z);
                 self->telemetry_.gyro[0] = reading.gyro.x;
                 self->telemetry_.gyro[1] = reading.gyro.y;
                 self->telemetry_.gyro[2] = reading.gyro.z;
-                std::memcpy(self->telemetry_.quaternion, ekf.q, sizeof(ekf.q));
-                self->telemetry_.yaw = ekf.yaw;
-                self->telemetry_.pitch = ekf.pitch;
-                self->telemetry_.roll = ekf.roll;
-                self->telemetry_.total_yaw = ekf.total_yaw;
-                self->telemetry_.tactical = self->tactical_ekf_.state();
+
             }
         }
 
         tx_semaphore_put(&self->heartbeat_sem_);
-        self->fill_state(output, ekf, reading);
+        self->fill_state(output, reading);
         msg::publish(self->output_, output);
+        // TEMP_IMU_DWT: includes read, selected filter, telemetry and publication.
+        const float round_us = bsp::dwt::delta_s(&timing_round) * 1.0e6f;
+        timing.temp_dwt_round_us = round_us;
+        if (timing.temp_dwt_count == 0 || round_us < timing.temp_dwt_round_min_us)
+            timing.temp_dwt_round_min_us = round_us;
+        if (round_us > timing.temp_dwt_round_max_us)
+            timing.temp_dwt_round_max_us = round_us;
+        ++timing.temp_dwt_count;
+        timing.temp_dwt_round_avg_us +=
+            (round_us - timing.temp_dwt_round_avg_us) / timing.temp_dwt_count;
         self->imu_loop_monitor_.end();
         const auto& loop_stats = self->imu_loop_monitor_.stats();
         self->telemetry_.loop_runtime_us = loop_stats.last_us;
         self->telemetry_.loop_runtime_max_us = loop_stats.max_us;
         self->telemetry_.loop_runtime_avg_us = loop_stats.average_us();
         self->telemetry_.loop_runtime_overruns = loop_stats.overrun_count;
+        if (self->cfg_.loop_sleep_ticks != 0U)
+        {
+            tx_thread_sleep(self->cfg_.loop_sleep_ticks);
+        }
     }
 }
+
+#endif
 
 #if HAS_DMIMU
 dmimu_service& dmimu_service::instance()
