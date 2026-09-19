@@ -77,8 +77,11 @@ public:
 
     types::status transfer(const std::uint8_t* tx, std::uint8_t* rx, std::size_t size)
     {
-        return transfer_(context_, tx, rx, size);
+        last_status = transfer_(context_, tx, rx, size);
+        return last_status;
     }
+
+    types::status last_status = types::status::not_initialized;
 
 private:
     void* context_;
@@ -262,7 +265,13 @@ types::status ps2::poll_once(ps2_state& message)
 {
     ps2_controller_state controller{};
     transport_ref transport{transport_, transfer_};
+    const auto start_tick = tx_time_get();
     const types::status status = ps2_protocol::poll(transport, controller, &message.raw);
+    message.poll_ticks = static_cast<std::uint32_t>(tx_time_get() - start_tick);
+    message.transport_status = static_cast<std::uint8_t>(transport.last_status);
+    // Diagnostic only: never accept a frame whose transport failed.
+    ps2_controller_state decoded{};
+    message.raw_decode_status = static_cast<std::uint8_t>(ps2_protocol::decode(message.raw, decoded));
     message.controller_id = message.raw.bytes[1];
     ++message.poll_count;
     if (status != types::status::ok)

@@ -231,10 +231,11 @@ void service::merge_thread_entry(ULONG arg)
 
         {
             ps2_state ps2_msg{};
-            if (msg::read(self->ps2_sub_, ps2_msg) == types::status::ok)
+            // Failed polls still publish diagnostics, but must not renew the link.
+            if (msg::read(self->ps2_sub_, ps2_msg) == types::status::ok && ps2_msg.frame_valid)
             {
                 ps2.data = ps2_msg.data;
-                ps2.tick = tx_time_get();
+                ps2.tick = ps2_msg.last_signal_tick;
                 ps2.seen = true;
             }
         }

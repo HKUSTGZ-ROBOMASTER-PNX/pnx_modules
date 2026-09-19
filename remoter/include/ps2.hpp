@@ -135,7 +135,9 @@ private:
     types::status (*transfer_)(void*, const std::uint8_t*, std::uint8_t*, std::size_t) = nullptr;
     ps2_config cfg_{};
     TX_THREAD thread_{};
-    alignas(8) std::uint8_t stack_[768]{};
+    // Debug polling + semaphore wait exceeds 648 B before wrappers/context.
+    // Analog decoding activates the additional floating-point context save.
+    alignas(8) std::uint8_t stack_[1536]{};
     msg::channel<ps2_state> output_{};
     bool initialized_ = false;
 };

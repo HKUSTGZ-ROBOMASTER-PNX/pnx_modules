@@ -170,6 +170,9 @@ struct ps2_raw_frame
 
 struct ps2_state
 {
+    std::uint8_t transport_status = 0;
+    std::uint8_t raw_decode_status = 0;
+    std::uint32_t poll_ticks = 0;
     state data{};
     ps2_raw_frame raw{};
     bool frame_valid = false;
