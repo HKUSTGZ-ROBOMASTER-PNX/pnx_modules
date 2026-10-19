@@ -208,9 +208,8 @@ pnxtypes::status start_bmi088()
     }
     if (user_config::bmi088_heater_enabled)
     {
-        initialization = imu::bmi088_heater::init(board::bmi088::heater_timer,
-            board::bmi088::heater_channel, user_config::bmi088_thermal, user_config::bmi088_heater,
-            heater_stack, sizeof(heater_stack));
+        initialization = imu::bmi088_heater::init(user_config::bmi088_thermal,
+            user_config::bmi088_heater, heater_stack, sizeof(heater_stack));
         if (initialization != status::ok)
         {
             return initialization;

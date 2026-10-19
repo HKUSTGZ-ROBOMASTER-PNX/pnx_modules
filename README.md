@@ -24,6 +24,18 @@ IMU 通过 `boards.<板型>.ahrs_device` 选择，CMake 仅编译一个姿态服
 姿态服务或温控线程。BMI088 选择额外链接 CMSIS-DSP；DMIMU 不运行 ESKF。
 使用方式、资源所有权和错误恢复详见 [IMU 文档](imu/README.md)。
 
+温控固定使用板载 BMI088 加热资源；独立启动时传入温控参数、线程配置与静态线程栈：
+`imu::bmi088_heater::init(thermal, config, stack, sizeof(stack))`。
+H723 的实现在 `bmi088_heater.cpp` 内部独占 TIM3、TIM6 / DMA2 Stream6，实现断点加热保护。
+启动加热时装载一次 DMA，正常温控更新仅刷新 250 ms 硬件倒计时；CPU 停在断点或线程停止
+更新时，TIM6 触发 DMA 将 TIM3 的 CCER 清零，直接关闭加热输出。后续占空比写入不会
+重新打开输出。恢复运行后丢弃旧温度，收到新温度后才重新启动加热；初始化或启动失败
+时停止加热。调试器须保留初始化时解除的 TIM6/TIM3 调试冻结位；
+`read()` 是线程发布的状态快照，CPU 暂停期间不会随硬件关断更新。
+实际断点关断时序仍需上板用示波器验证。
+
+F407 保留原有软件温控超时行为，不接入本次 H723 的硬件保护。当前 JSON 默认关闭 F407 加热。
+
 ## 裁判接收
 
 `boards.<板型>.referee_uart` 选择接收串口；`referee` 配置接收线程的优先级、周期、

@@ -152,10 +152,11 @@ struct state
     pnxtypes::status result = pnxtypes::status::not_initialized;
 };
 
-// Serialized startup, static-lifetime stack; owns this PWM channel for firmware lifetime.
+// Serialized startup, static-lifetime stack; owns the board BMI088 heater for firmware lifetime.
+// H723 also owns TIM3, TIM6 and its update DMA; hardware gates heating off after 250 ms
+// without a control update, including a halted CPU. F407 retains software timeout only.
 // No SPI access. Do not terminate the worker externally or write its PWM channel elsewhere.
-pnxtypes::status init(bsp::pwm::handle timer, bsp::pwm::channel channel,
-    const bmi088_thermal& thermal, const bmi088_heater_config& config, void* stack,
+pnxtypes::status init(const bmi088_thermal& thermal, const bmi088_heater_config& config, void* stack,
     ULONG stack_size);
 // Single sampling-thread producer. Submit only newly read temperatures with HAL tick timestamps.
 void submit(float temperature, uint32_t received_ms);
