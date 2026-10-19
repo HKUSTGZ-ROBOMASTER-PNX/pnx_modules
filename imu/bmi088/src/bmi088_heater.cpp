@@ -1,4 +1,4 @@
-#include "bmi088_heater.hpp"
+#include "bmi088.hpp"
 #include "bsp_pwm.hpp"
 #include "pid.hpp"
 #include "main.h"

@@ -9,12 +9,19 @@ namespace imu
 {
 namespace
 {
-constexpr float accel_min = -235.2f, accel_max = 235.2f;
-constexpr float gyro_min = -34.88f, gyro_max = 34.88f;
-constexpr float pitch_min = -90.0f, pitch_max = 90.0f;
-constexpr float roll_min = -180.0f, roll_max = 180.0f;
-constexpr float yaw_min = -180.0f, yaw_max = 180.0f;
-constexpr float quaternion_min = -1.0f, quaternion_max = 1.0f;
+// Vector and Euler frames use little-endian unsigned 16-bit components.
+float decode_u16(const uint8_t* bytes, float minimum, float maximum)
+{
+    const uint16_t raw = static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
+    return math::dequantize(raw, minimum, maximum, 16U);
+}
+
+math::vector3 decode_vector(const uint8_t data[8], float range)
+{
+    return {decode_u16(data + 2, -range, range), decode_u16(data + 4, -range, range),
+        decode_u16(data + 6, -range, range)};
+}
+
 } // namespace
 
 pnxtypes::status dmimu::configure(const config& cfg)
@@ -93,13 +100,17 @@ pnxtypes::status dmimu::receive(bsp::can::handle bus, const bsp::can::rx_frame& 
     switch (data[0])
     {
         case 1:
-            decode_accel(data);
+            working_.accel = decode_vector(data, 235.2f);
+            working_.temperature = static_cast<float>(data[1]); // Integer degrees Celsius.
             break;
         case 2:
-            decode_gyro(data);
+            working_.gyro = decode_vector(data, 34.88f);
             break;
         case 3:
-            decode_euler(data);
+            // Wire order is Pitch, Yaw, Roll; convert device degrees to radians.
+            working_.pitch = math::degrees_to_radians(decode_u16(data + 2, -90.0f, 90.0f));
+            working_.yaw = math::degrees_to_radians(decode_u16(data + 4, -180.0f, 180.0f));
+            working_.roll = math::degrees_to_radians(decode_u16(data + 6, -180.0f, 180.0f));
             break;
         case 4:
             decode_quaternion(data);
@@ -182,41 +193,6 @@ pnxtypes::status dmimu::write_register(register_id reg, uint32_t data)
     return send_command(reg, true, data);
 }
 
-void dmimu::decode_accel(const uint8_t data[8])
-{
-    const uint16_t x = static_cast<uint16_t>((static_cast<uint16_t>(data[3]) << 8U) | data[2]);
-    const uint16_t y = static_cast<uint16_t>((static_cast<uint16_t>(data[5]) << 8U) | data[4]);
-    const uint16_t z = static_cast<uint16_t>((static_cast<uint16_t>(data[7]) << 8U) | data[6]);
-
-    working_.accel.x = math::dequantize(x, accel_min, accel_max, 16U);
-    working_.accel.y = math::dequantize(y, accel_min, accel_max, 16U);
-    working_.accel.z = math::dequantize(z, accel_min, accel_max, 16U);
-    working_.temperature = static_cast<float>(data[1]); // Integer degrees Celsius.
-}
-
-void dmimu::decode_gyro(const uint8_t data[8])
-{
-    const uint16_t x = static_cast<uint16_t>((static_cast<uint16_t>(data[3]) << 8U) | data[2]);
-    const uint16_t y = static_cast<uint16_t>((static_cast<uint16_t>(data[5]) << 8U) | data[4]);
-    const uint16_t z = static_cast<uint16_t>((static_cast<uint16_t>(data[7]) << 8U) | data[6]);
-
-    working_.gyro.x = math::dequantize(x, gyro_min, gyro_max, 16U);
-    working_.gyro.y = math::dequantize(y, gyro_min, gyro_max, 16U);
-    working_.gyro.z = math::dequantize(z, gyro_min, gyro_max, 16U);
-}
-
-void dmimu::decode_euler(const uint8_t data[8])
-{
-    const uint16_t pitch = static_cast<uint16_t>((static_cast<uint16_t>(data[3]) << 8U) | data[2]);
-    const uint16_t yaw = static_cast<uint16_t>((static_cast<uint16_t>(data[5]) << 8U) | data[4]);
-    const uint16_t roll = static_cast<uint16_t>((static_cast<uint16_t>(data[7]) << 8U) | data[6]);
-
-    // Official wire order is Pitch, Yaw, Roll (not Roll, Pitch, Yaw).
-    working_.pitch = math::degrees_to_radians(math::dequantize(pitch, pitch_min, pitch_max, 16U));
-    working_.yaw = math::degrees_to_radians(math::dequantize(yaw, yaw_min, yaw_max, 16U));
-    working_.roll = math::degrees_to_radians(math::dequantize(roll, roll_min, roll_max, 16U));
-}
-
 void dmimu::decode_quaternion(const uint8_t data[8])
 {
     // DATA[2][7:2] contains W[5:0]. The V1.2 example's 0xF8 drops W bit 0;
@@ -231,10 +207,10 @@ void dmimu::decode_quaternion(const uint8_t data[8])
                               ((data[6] & 0xC0U) >> 6U));
     const uint16_t z = static_cast<uint16_t>(((data[6] & 0x3FU) << 8U) | data[7]);
 
-    working_.quaternion.w = math::dequantize(w, quaternion_min, quaternion_max, 14U);
-    working_.quaternion.x = math::dequantize(x, quaternion_min, quaternion_max, 14U);
-    working_.quaternion.y = math::dequantize(y, quaternion_min, quaternion_max, 14U);
-    working_.quaternion.z = math::dequantize(z, quaternion_min, quaternion_max, 14U);
+    working_.quaternion.w = math::dequantize(w, -1.0f, 1.0f, 14U);
+    working_.quaternion.x = math::dequantize(x, -1.0f, 1.0f, 14U);
+    working_.quaternion.y = math::dequantize(y, -1.0f, 1.0f, 14U);
+    working_.quaternion.z = math::dequantize(z, -1.0f, 1.0f, 14U);
 }
 
 } // namespace imu

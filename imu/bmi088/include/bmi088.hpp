@@ -3,6 +3,7 @@
 #include "status.hpp"
 #include "geometry.hpp"
 #include "config.hpp"
+#include "tx_api.h"
 
 namespace imu
 {
@@ -38,7 +39,6 @@ public:
     math::vector3 gyro_offset{gyro_preoffset_x, gyro_preoffset_y, gyro_preoffset_z};
     math::vector3 accel_offset{accel_preoffset_x, accel_preoffset_y, accel_preoffset_z};
 
-    ~bmi088() = default;
     pnxtypes::status configure();
 
     struct calibration
@@ -85,8 +85,6 @@ private:
     static constexpr uint8_t acc_range_6g = 0x01;
     static constexpr uint8_t acc_conf_addr = 0x40;
     static constexpr uint8_t acc_range_addr = 0x41;
-    static constexpr uint8_t acc_int1_io_ctrl_addr = 0x53;
-    static constexpr uint8_t acc_int_map_data_addr = 0x58;
     static constexpr uint8_t acc_pwr_conf_addr = 0x7C;
     static constexpr uint8_t acc_pwr_conf_act = 0x00;
     static constexpr uint8_t acc_pwr_ctrl_addr = 0x7D;
@@ -104,11 +102,6 @@ private:
     static constexpr uint8_t gyro_odr_2000_bw_230 = 0x01;
     static constexpr uint8_t gyro_lpm1_addr = 0x11;
     static constexpr uint8_t gyro_lpm1_normal = 0x00;
-    static constexpr uint8_t gyro_lpm1_suspend = 0x80;
-    static constexpr uint8_t gyro_int_ctrl_addr = 0x15;
-    static constexpr uint8_t gyro_drdy_on = 0x80;
-    static constexpr uint8_t gyro_int_io_conf_addr = 0x16;
-    static constexpr uint8_t gyro_int_io_map_addr = 0x18;
     static constexpr uint8_t gyro_soft_reset_addr = 0x14;
     static constexpr uint8_t gyro_soft_reset_val = 0xB6;
 
@@ -128,4 +121,46 @@ private:
     static constexpr float accel_preoffset_z = 0.014968990490337293f;
 };
 
+// Defaults match penix H723. Set the C-board values before enabling heating.
+struct bmi088_thermal
+{
+    float target = 45.0f;
+    float boost = 0.06f;
+    float reboost = 0.05f;
+    float approach_start = 0.044f;
+    float approach_end = 0.029f;
+    float hold_max = 0.04f;
+};
+
+struct bmi088_heater_config
+{
+    uint32_t period_ms = 125; // PID gains are tuned for 125 ms; other periods are rejected.
+    uint32_t timeout_ms = 500;
+    uint32_t stable_time_ms = 2000;
+    float stable_tolerance = 0.5f;
+    uint32_t thread_priority = 2;
+};
+
+namespace bmi088_heater
+{
+struct state
+{
+    float temperature = 0;
+    float duty = 0;
+    bool stable = false;
+    bool active = false;
+    pnxtypes::status result = pnxtypes::status::not_initialized;
+};
+
+// Serialized startup, static-lifetime stack; owns this PWM channel for firmware lifetime.
+// No SPI access. Do not terminate the worker externally or write its PWM channel elsewhere.
+pnxtypes::status init(bsp::pwm::handle timer, bsp::pwm::channel channel,
+    const bmi088_thermal& thermal, const bmi088_heater_config& config, void* stack,
+    ULONG stack_size);
+// Single sampling-thread producer. Submit only newly read temperatures with HAL tick timestamps.
+void submit(float temperature, uint32_t received_ms);
+// Invalidate temperature; the worker stops PWM on its next tick. Fresh submit re-enables it.
+void disable();
+state read();
+} // namespace bmi088_heater
 } // namespace imu

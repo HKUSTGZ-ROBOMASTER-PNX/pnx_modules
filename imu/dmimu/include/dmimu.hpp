@@ -102,9 +102,6 @@ private:
     bool available_ = false;
     bool have_sample_ = false;
     bool reply_available_ = false;
-    void decode_accel(const uint8_t data[8]);
-    void decode_gyro(const uint8_t data[8]);
-    void decode_euler(const uint8_t data[8]);
     void decode_quaternion(const uint8_t data[8]);
     pnxtypes::status send_command(register_id reg, bool write, uint32_t data);
 };
