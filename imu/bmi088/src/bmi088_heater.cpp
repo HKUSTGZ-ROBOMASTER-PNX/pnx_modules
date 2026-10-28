@@ -25,7 +25,7 @@ constexpr auto heater_channel = board::bmi088::heater_channel;
 
 bmi088_thermal thermal{};
 bmi088_heater_config cfg{};
-control::pid temperature_pid{300.0f, 0.06f, 100.0f, 90.0f, 200.0f,
+control::pid temperature_pid{0.0f, 0.0f, 0.0f, 0.0f, 200.0f,
     control::pid_mode::position | control::pid_mode::integral_limit |
         control::pid_mode::changing_integral_rate | control::pid_mode::derivative_on_measurement};
 heat_phase heat_state = heat_phase::boost;
@@ -347,8 +347,22 @@ pnxtypes::status init(const bmi088_thermal& settings, const bmi088_heater_config
             return initialization = pnxtypes::status::invalid_arg;
         }
     }
+    const float gains[]{settings.kp, settings.ki, settings.kd};
+    for (float gain : gains)
+    {
+        if (!std::isfinite(gain) || gain < 0 || gain > 10000)
+        {
+            return initialization = pnxtypes::status::invalid_arg;
+        }
+    }
+    if (!std::isfinite(settings.max_out) || settings.max_out < 0 || settings.max_out > 999)
+    {
+        return initialization = pnxtypes::status::invalid_arg;
+    }
     cfg = config;
     thermal = settings;
+    temperature_pid.tune(settings.kp, settings.ki, settings.kd);
+    temperature_pid.max_out = settings.max_out;
     temperature_pid.scalar_a = 3.5f;
     temperature_pid.scalar_b = 0.2f;
     initialization = stop_heater();

@@ -26,6 +26,9 @@ IMU 通过 `boards.<板型>.ahrs_device` 选择，CMake 仅编译一个姿态服
 
 温控固定使用板载 BMI088 加热资源；独立启动时传入温控参数、线程配置与静态线程栈：
 `imu::bmi088_heater::init(thermal, config, stack, sizeof(stack))`。
+两块板的保温 PID 分别在 `boards.<板型>.bmi088_thermal` 中配置 `kp`、`ki`、`kd` 和
+`max_out`
+
 H723 的实现在 `bmi088_heater.cpp` 内部独占 TIM3、TIM6 / DMA2 Stream6，实现断点加热保护。
 启动加热时装载一次 DMA，正常温控更新仅刷新 250 ms 硬件倒计时；CPU 停在断点或线程停止
 更新时，TIM6 触发 DMA 将 TIM3 的 CCER 清零，直接关闭加热输出。后续占空比写入不会

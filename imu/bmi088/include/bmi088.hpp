@@ -130,6 +130,11 @@ struct bmi088_thermal
     float approach_start = 0.044f;
     float approach_end = 0.029f;
     float hold_max = 0.04f;
+    // Hold-phase gains for the fixed 125 ms control period; each is in [0, 10000].
+    float kp = 300.0f;
+    float ki = 0.06f;
+    float kd = 100.0f;
+    float max_out = 90.0f; // PID output limit [0, 999], divided by 999 before hold_max clamping.
 };
 
 struct bmi088_heater_config
