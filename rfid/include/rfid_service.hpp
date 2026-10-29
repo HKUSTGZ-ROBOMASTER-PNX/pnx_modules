@@ -15,7 +15,7 @@ struct sample
     pnxtypes::status buzzer_status = pnxtypes::status::ok;
 };
 
-// Automatically called by the module startup hook. Serialized, idempotent startup.
+// Automatically called by this firmware's ThreadX startup wrapper. Serialized, idempotent.
 // Owns UART RX/TX, buzzer timer, worker stack and buffers for firmware lifetime.
 // Reader/card absence does not block startup; RX waits use deadlines in the worker.
 pnxtypes::status init() noexcept;

@@ -11,7 +11,7 @@ target_link_libraries(my_app PRIVATE modules)
 ```
 
 此 target 提供模块头文件和生成的 `user_config.hpp`。配置脚本只生成配置，不另建转发
-target。`runtime/src/startup.cpp` 在 ThreadX 初始化钩子中自动启动 RFID 服务；其他服务仍需应用显式启动。
+target。本固件通过根 CMake 的 ThreadX 入口包装自动启动 RFID；其他服务仍需应用显式启动。
 
 | 模块 | 启动入口 | 输出 |
 | --- | --- | --- |
@@ -104,9 +104,16 @@ pnxtypes::status start_referee_with_events()
 
 ## RFID
 
-`runtime/src/startup.cpp` 实现 `tx_application_define()`，先调用 `bsp::threadx::init()`，
-再调用 `rfid::init()` 创建读取线程，最后调用应用 `app_start()`。覆盖 `app_start()`
-不会影响 RFID 的默认启动。设备目录只保留无后台线程的协议和蜂鸣器接口。
+`rfid/src/startup.cpp` 提供 `__wrap_tx_application_define()`。根 CMake 使用 GNU ld 的
+`--wrap=tx_application_define`，将 ThreadX 对原启动入口的调用接到这里，先执行
+`rfid::init()` 创建读取线程，再转入 BSP 原有 `tx_application_define()`，由 BSP 初始化
+USBX、创建 USB 接收线程并调用 `app_start()`。此时 ThreadX 尚未调度；RFID 的串口操作
+在调度开始后的工作线程内执行，启动入口不等待读卡器或卡片。
+
+BSP 的源码、原始启动函数和弱应用钩子保持原样；应用覆盖 `app_start()` 不影响 RFID
+自动启动。没有额外 runtime 目录。其他工程仅链接 modules 时，如未使用此链接选项，
+需在自己的 ThreadX 初始化钩子中显式调用 `rfid::init()`。设备目录只保留无后台线程的
+协议和蜂鸣器接口。
 
 服务使用旧工程的 UART 读卡协议：9600 baud、8N1、默认地址 32，A3 命令读取块 4 的
 16 字节 data，使用读卡器保存的 KEYA。只支持读数据，不提供 UID 或写卡功能。
