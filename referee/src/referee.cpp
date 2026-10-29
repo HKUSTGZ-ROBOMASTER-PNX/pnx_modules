@@ -1,266 +1,430 @@
 #include "referee.hpp"
 
-#include "bsp_dma.hpp"
 #include "crc.hpp"
-#include "memory.h"
+#include "main.h"
+#include "user_config.hpp"
 
 #include <cstring>
+#include <atomic>
+#include <type_traits>
 
 namespace referee
 {
 
 namespace
 {
+using pnxtypes::status;
+config cfg{};
+state published{};
+TX_THREAD worker{};
+alignas(8) uint8_t stack[user_config::referee_stack_size]{};
+state current{};
+callbacks handlers{};
+bool attempted = false;
+status initialization = status::not_initialized;
+memory::buffer<256> rx_buffer RAM_D1_BSS{};
 
-constexpr std::size_t rx_buffer_size = 256;
-bsp::dma::buffer<rx_buffer_size> rx_buffer_storage BSP_DMA_BUFFER{};
-
-enum class decode_result : uint8_t
+struct receive_fifo
 {
-    known,
-    unknown,
-    invalid_length,
+    // One ISR producer and one thread consumer. Full buffers drop NEW bytes;
+    // already accepted stream bytes retain their order. No allocation or wait.
+    static constexpr uint32_t capacity = 256U;
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+
+    void push(const uint8_t* data, uint16_t len, uint32_t received_ms)
+    {
+        if (data == nullptr)
+        {
+            return;
+        }
+        for (uint16_t i = 0; i < len; ++i)
+        {
+            const auto write = head_.load(std::memory_order_relaxed);
+            if (write - tail_.load(std::memory_order_acquire) == capacity)
+            {
+                dropped_.fetch_add(1U, std::memory_order_relaxed);
+                continue;
+            }
+            buffer_[write % capacity] = data[i];
+            timestamps_[write % capacity] = received_ms;
+            head_.store(write + 1U, std::memory_order_release);
+        }
+    }
+
+    bool pop(uint8_t& byte, uint32_t& received_ms)
+    {
+        const auto read = tail_.load(std::memory_order_relaxed);
+        if (read == head_.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        byte = buffer_[read % capacity];
+        received_ms = timestamps_[read % capacity];
+        tail_.store(read + 1U, std::memory_order_release);
+        return true;
+    }
+
+    void clear()
+    {
+        tail_.store(head_.load(std::memory_order_acquire), std::memory_order_release);
+    }
+
+    uint32_t dropped_bytes() const
+    {
+        return dropped_.load(std::memory_order_relaxed);
+    }
+
+private:
+    uint8_t buffer_[capacity]{};
+    uint32_t timestamps_[capacity]{};
+    std::atomic<uint32_t> head_{0};
+    std::atomic<uint32_t> tail_{0};
+    std::atomic<uint32_t> dropped_{0};
 };
 
-template <typename Packet>
-bool copy_fixed_packet(Packet& destination, const uint8_t* source, uint16_t length) noexcept
-{
-    static_assert(std::is_trivially_copyable_v<Packet>);
+receive_fifo fifo;
 
-    if (source == nullptr || length != sizeof(Packet))
+void on_rx(bsp::usart::handle, uint8_t* data, uint32_t size)
+{
+    fifo.push(data, static_cast<uint16_t>(size), HAL_GetTick());
+}
+
+template <typename T> struct cached_sample
+{
+    sample<T> value{};
+    bool available = false;
+};
+
+template <typename T> cached_sample<T> cache{};
+
+struct packet
+{
+    uint16_t command;
+    const uint8_t* data;
+    uint16_t size;
+    uint32_t received_ms;
+};
+
+template <typename T> bool decode(const packet& frame, receive_callback<T> on_update)
+{
+    sample<T> value{};
+    if constexpr (std::is_same_v<T, robot_interaction_data>)
     {
-        return false;
+        if (frame.size < sizeof(RoboInteractData_t) || frame.size > protocol::max_data_length)
+        {
+            return false;
+        }
+        std::memcpy(&value.data.header, frame.data, sizeof(RoboInteractData_t));
+        value.data.payload_length = frame.size - sizeof(RoboInteractData_t);
+        std::memcpy(value.data.payload, frame.data + sizeof(RoboInteractData_t),
+            value.data.payload_length);
     }
-    std::memcpy(&destination, source, sizeof(Packet));
+    else
+    {
+        static_assert(std::is_trivially_copyable_v<T>);
+        if (frame.size != sizeof(T))
+        {
+            return false;
+        }
+        std::memcpy(&value.data, frame.data, sizeof(T));
+    }
+    value.received_ms = frame.received_ms;
+    TX_INTERRUPT_SAVE_AREA
+    TX_DISABLE
+    value.sequence = cache<T>.value.sequence + 1;
+    cache<T>.value = value;
+    cache<T>.available = true;
+    TX_RESTORE
+    if (on_update)
+    {
+        on_update(value);
+    }
     return true;
 }
 
-bool copy_robot_interaction(robot_interaction_data& destination, const uint8_t* source,
-                            uint16_t length) noexcept
+bool decode(const packet& frame)
 {
-    if (source == nullptr || length < sizeof(destination.header) ||
-        length > protocol::max_data_length)
+    switch (frame.command)
     {
-        return false;
+        case RefereeID::GameStatus:
+            return decode<GameStatus_t>(frame, handlers.game_status);
+        case RefereeID::GameResult:
+            return decode<GameResult_t>(frame, handlers.game_result);
+        case RefereeID::RobotHP:
+            return decode<RobotHP_t>(frame, handlers.robot_hp);
+        case RefereeID::EventData:
+            return decode<EventData_t>(frame, handlers.event_data);
+        case RefereeID::RefereeWarning:
+            return decode<RefereeWarning_t>(frame, handlers.referee_warning);
+        case RefereeID::DartInfo:
+            return decode<DartInfo_t>(frame, handlers.dart_info);
+        case RefereeID::GameRobotStatus:
+            return decode<GameRobotStatus_t>(frame, handlers.game_robot_status);
+        case RefereeID::PowerHeatData:
+            return decode<PowerHeatData_t>(frame, handlers.power_heat_data);
+        case RefereeID::GameRobotPos:
+            return decode<GameRobotPos_t>(frame, handlers.game_robot_pos);
+        case RefereeID::Buff:
+            return decode<Buff_t>(frame, handlers.buff);
+        case RefereeID::RobotHurt:
+            return decode<RobotHurt_t>(frame, handlers.robot_hurt);
+        case RefereeID::ShootData:
+            return decode<ShootData_t>(frame, handlers.shoot_data);
+        case RefereeID::ProjectileAllowance:
+            return decode<BulletRemaining_t>(frame, handlers.projectile_allowance);
+        case RefereeID::RfidStatus:
+            return decode<RfidStatus_t>(frame, handlers.rfid_status);
+        case RefereeID::DartClientCmd:
+            return decode<DartClientCmd_t>(frame, handlers.dart_client_cmd);
+        case RefereeID::GroundRobotPosition:
+            return decode<GroundRobotPosition_t>(frame, handlers.ground_robot_position);
+        case RefereeID::RadarMarkData:
+            return decode<RadarMarkData_t>(frame, handlers.radar_mark_data);
+        case RefereeID::SentryInfo:
+            return decode<SentryInfo_t>(frame, handlers.sentry_info);
+        case RefereeID::RadarInfo:
+            return decode<RadarInfo_t>(frame, handlers.radar_info);
+        case RefereeID::RoboInteractData:
+            return decode<robot_interaction_data>(frame, handlers.robo_interact_data);
+        default:
+            return true; // No typed layout is defined for this command; do not dispatch it.
     }
-
-    std::memcpy(&destination.header, source, sizeof(destination.header));
-    destination.payload_length = static_cast<uint16_t>(length - sizeof(destination.header));
-    std::memset(destination.payload, 0, sizeof(destination.payload));
-    std::memcpy(destination.payload, source + sizeof(destination.header),
-                destination.payload_length);
-    return true;
 }
 
-decode_result decode_packet(packet_store& packets, uint16_t command_id, const uint8_t* payload,
-                            uint16_t payload_length) noexcept
+// Owns only stream assembly state. A reset discards the partial frame, not cached data.
+struct parser
 {
-    bool copied = false;
-    switch (command_id)
+    static constexpr uint16_t payload_offset = sizeof(FrameHeader) + sizeof(uint16_t);
+    static constexpr uint16_t overhead = payload_offset + sizeof(uint16_t);
+    uint8_t buffer[protocol::max_data_length + overhead]{};
+    uint16_t used = 0;
+    uint16_t expected = 0;
+    uint32_t last_byte_ms = 0;
+
+    void reset()
     {
-    case RefereeID::GameStatus:
-        copied = copy_fixed_packet(packets.game_status, payload, payload_length);
-        break;
-    case RefereeID::GameRobotStatus:
-        copied = copy_fixed_packet(packets.game_robot_status, payload, payload_length);
-        break;
-    case RefereeID::PowerHeatData:
-        copied = copy_fixed_packet(packets.power_heat_data, payload, payload_length);
-        break;
-    case RefereeID::Buff:
-        copied = copy_fixed_packet(packets.buff, payload, payload_length);
-        break;
-    case RefereeID::RobotHurt:
-        copied = copy_fixed_packet(packets.robot_hurt, payload, payload_length);
-        break;
-    case RefereeID::DartInfo:
-        copied = copy_fixed_packet(packets.dart_info, payload, payload_length);
-        break;
-    case RefereeID::DartClientCmd:
-        copied = copy_fixed_packet(packets.dart_client_command, payload, payload_length);
-        break;
-    case RefereeID::RoboInteractData:
-        copied = copy_robot_interaction(packets.robot_interaction, payload, payload_length);
-        break;
-    default:
-        return decode_result::unknown;
+        used = 0;
+        expected = 0;
     }
 
-    return copied ? decode_result::known : decode_result::invalid_length;
+    void expire(uint32_t now)
+    {
+        if (used != 0 && now - last_byte_ms >= cfg.offline_timeout_ms)
+        {
+            reset();
+            ++current.frame_timeout_count;
+        }
+    }
+
+    void push(uint8_t byte, uint32_t received_ms)
+    {
+        // Arrival timestamps prevent worker scheduling delays from expiring queued frames.
+        expire(received_ms);
+        last_byte_ms = received_ms;
+        if (used == 0 && byte != 0xA5)
+        {
+            return;
+        }
+        buffer[used++] = byte;
+        if (used == sizeof(FrameHeader))
+        {
+            if (crc::verify_crc8_checksum(buffer, sizeof(FrameHeader)) == 0)
+            {
+                ++current.crc8_error_count;
+                reset();
+                return;
+            }
+            const uint16_t length = buffer[1] | (buffer[2] << 8);
+            if (length > protocol::max_data_length)
+            {
+                ++current.length_error_count;
+                reset();
+                return;
+            }
+            expected = length + overhead;
+        }
+        if (expected == 0 || used != expected)
+        {
+            return;
+        }
+        const uint16_t length = expected - overhead;
+        const uint16_t command =
+            buffer[sizeof(FrameHeader)] | (buffer[sizeof(FrameHeader) + 1] << 8);
+        const bool valid = crc::verify_crc16_checksum(buffer, used) != 0;
+        reset();
+        if (!valid)
+        {
+            ++current.crc16_error_count;
+            return;
+        }
+        if (!decode(packet{command, buffer + payload_offset, length, received_ms}))
+        {
+            ++current.length_error_count;
+            return;
+        }
+        current.received_ms = received_ms;
+        current.online = true;
+        ++current.sequence;
+    }
+};
+
+void run(ULONG)
+{
+    parser stream{};
+    uint32_t dropped = 0;
+    uint32_t last_recovery = HAL_GetTick();
+    for (;;)
+    {
+        // Bound work per tick. Check overflow during draining as well as between batches:
+        // bytes accepted after a gap must never complete a frame from before that gap.
+        for (uint16_t processed = 0; processed < receive_fifo::capacity; ++processed)
+        {
+            const auto lost = fifo.dropped_bytes();
+            if (lost != dropped)
+            {
+                dropped = lost;
+                fifo.clear();
+                stream.reset();
+            }
+            uint8_t byte = 0;
+            uint32_t received_ms = 0;
+            if (!fifo.pop(byte, received_ms))
+            {
+                break;
+            }
+            stream.push(byte, received_ms);
+        }
+
+        const auto now = HAL_GetTick();
+        stream.expire(now);
+        current.rx_dropped_bytes = fifo.dropped_bytes();
+        current.updated_ms = now;
+        if (now - current.received_ms >= cfg.offline_timeout_ms)
+        {
+            current.online = false;
+        }
+        TX_INTERRUPT_SAVE_AREA
+        TX_DISABLE
+        published = current;
+        TX_RESTORE
+
+        if (bsp::usart::rx_status(cfg.uart.instance) != status::ok &&
+            now - last_recovery >= cfg.offline_timeout_ms)
+        {
+            last_recovery = now;
+            if (bsp::usart::stop_rx(cfg.uart.instance) == status::ok)
+            {
+                fifo.clear();
+                stream.reset();
+                (void)bsp::usart::start_rx_to_idle(cfg.uart.instance, rx_buffer,
+                    bsp::usart::rx_callback::bind<&on_rx>());
+            }
+        }
+        tx_thread_sleep(cfg.period_ticks);
+    }
 }
 
 } // namespace
 
-service& service::instance()
+template <typename T> bool read(sample<T>& destination)
 {
-    static service inst;
-    return inst;
+    static_assert(command_id<T> != 0xffff, "Unsupported referee packet type");
+    TX_INTERRUPT_SAVE_AREA
+    TX_DISABLE
+    const bool valid = cache<T>.available;
+    if (valid)
+    {
+        destination = cache<T>.value;
+    }
+    TX_RESTORE
+    return valid;
 }
 
-void service::push_rx(const uint8_t* data, uint16_t len)
+template bool read(sample<GameStatus_t>&);
+template bool read(sample<GameResult_t>&);
+template bool read(sample<RobotHP_t>&);
+template bool read(sample<EventData_t>&);
+template bool read(sample<RefereeWarning_t>&);
+template bool read(sample<DartInfo_t>&);
+template bool read(sample<GameRobotStatus_t>&);
+template bool read(sample<PowerHeatData_t>&);
+template bool read(sample<GameRobotPos_t>&);
+template bool read(sample<Buff_t>&);
+template bool read(sample<RobotHurt_t>&);
+template bool read(sample<ShootData_t>&);
+template bool read(sample<BulletRemaining_t>&);
+template bool read(sample<RfidStatus_t>&);
+template bool read(sample<DartClientCmd_t>&);
+template bool read(sample<GroundRobotPosition_t>&);
+template bool read(sample<RadarMarkData_t>&);
+template bool read(sample<SentryInfo_t>&);
+template bool read(sample<RadarInfo_t>&);
+template bool read(sample<robot_interaction_data>&);
+
+state read()
 {
-    if (data != nullptr && len > 0)
-    {
-        rx_fifo_.push(data, len);
-    }
+    TX_INTERRUPT_SAVE_AREA
+    TX_DISABLE
+    const auto result = published;
+    TX_RESTORE
+    return result;
 }
 
-void service::referee_rx_callback(bsp::usart::port, const bsp::usart::rx_frame& frame)
+status init(const config& settings, const callbacks& on_update)
 {
-    if (frame.data != nullptr && frame.len > 0)
+    if (attempted)
     {
-        instance().push_rx(frame.data, static_cast<uint16_t>(frame.len));
+        return initialization;
     }
-}
+    attempted = true;
+    cfg = settings;
+    handlers = on_update;
+    initialization = status::busy;
 
-bool service::create_resources()
-{
-    if (tx_semaphore_create(&heartbeat_sem_, const_cast<CHAR*>("referee_hb"), 0) != TX_SUCCESS)
+    if (cfg.uart.instance == bsp::usart::handle::none)
     {
-        return false;
+        return initialization = status::not_configured;
     }
-
-    std::memset(rx_buffer_storage.data(), 0, rx_buffer_storage.capacity());
-    rx_buffer_ = rx_buffer_storage.data();
-
-    if (bsp::usart::init(cfg_.uart_port, bsp::usart::mode::dma) != types::status::ok)
+    if (cfg.thread_priority >= TX_MAX_PRIORITIES || cfg.period_ticks == 0 ||
+        cfg.period_ticks > INT32_MAX || cfg.offline_timeout_ms == 0 ||
+        cfg.offline_timeout_ms > INT32_MAX)
     {
-        return false;
+        return initialization = status::invalid_arg;
     }
-    if (bsp::usart::start_rx_to_idle(cfg_.uart_port, rx_buffer_storage.view(),
-                                     bsp::usart::rx_callback::bind<&referee_rx_callback>(),
-                                     nullptr) != types::status::ok)
+    if (tx_thread_create(&worker, const_cast<CHAR*>("referee"), run, 0, stack, sizeof(stack),
+            cfg.thread_priority, cfg.thread_priority, TX_NO_TIME_SLICE,
+            TX_DONT_START) != TX_SUCCESS)
     {
-        return false;
+        return initialization = status::error;
     }
-
-    if (tx_thread_create(&thread_, const_cast<CHAR*>("referee"), referee_thread_entry,
-                         reinterpret_cast<ULONG>(this), stack_, sizeof(stack_),
-                         cfg_.thread_priority, cfg_.thread_priority, TX_NO_TIME_SLICE,
-                         TX_AUTO_START) != TX_SUCCESS)
+    auto result = bsp::usart::init(cfg.uart, bsp::usart::mode::dma);
+    bool owned = false;
+    if (result == status::ok)
     {
-        return false;
+        result = bsp::usart::start_rx_to_idle(cfg.uart.instance, rx_buffer,
+            bsp::usart::rx_callback::bind<&on_rx>());
+        owned = result == status::ok;
     }
-
-    return true;
-}
-
-types::status service::init(const config& cfg)
-{
-    if (initialized_)
+    if (result == status::ok && tx_thread_resume(&worker) == TX_SUCCESS)
     {
-        return types::status::ok;
+        return initialization = status::ok;
     }
-    cfg_ = cfg;
-    if (!create_resources())
+    if (result == status::ok)
     {
-        return types::status::error;
+        result = status::error;
     }
-    initialized_ = true;
-    return types::status::ok;
-}
-
-void service::referee_thread_entry(ULONG arg)
-{
-    auto* self = reinterpret_cast<service*>(arg);
-    if (self == nullptr)
+    if (owned)
     {
-        self = &instance();
-    }
-
-    uint8_t rx_byte = 0;
-    UnpackState state = STEP_HEADER_SOF;
-    uint8_t buffer[256]{};
-    uint16_t data_length = 0;
-    uint16_t index = 0;
-
-    for (;;)
-    {
-        while (self->rx_fifo_.pop(rx_byte))
+        const auto stopped = bsp::usart::stop_rx(cfg.uart.instance);
+        if (stopped != status::ok)
         {
-            switch (state)
-            {
-            case STEP_HEADER_SOF:
-                if (rx_byte == 0xA5)
-                {
-                    index = 0;
-                    buffer[index++] = rx_byte;
-                    state = STEP_LENGTH_SEQ;
-                }
-                break;
-
-            case STEP_LENGTH_SEQ:
-                buffer[index++] = rx_byte;
-                if (index == sizeof(FrameHeader))
-                {
-                    if (crc::verify_crc8_checksum(buffer, sizeof(FrameHeader)) == 0)
-                    {
-                        ++self->status_.crc8_error_count;
-                        state = STEP_HEADER_SOF;
-                        break;
-                    }
-
-                    data_length = static_cast<uint16_t>(buffer[1] | (buffer[2] << 8));
-                    if (data_length > protocol::max_data_length)
-                    {
-                        ++self->status_.length_error_count;
-                        state = STEP_HEADER_SOF;
-                        break;
-                    }
-                    state = STEP_DATA_CRC16;
-                }
-                break;
-
-            case STEP_DATA_CRC16:
-                buffer[index++] = rx_byte;
-                if (index == static_cast<uint16_t>(sizeof(FrameHeader) + sizeof(uint16_t) +
-                                                   data_length + sizeof(uint16_t)))
-                {
-                    if (crc::verify_crc16_checksum(buffer, index) == 0)
-                    {
-                        ++self->status_.crc16_error_count;
-                        state = STEP_HEADER_SOF;
-                        break;
-                    }
-
-                    uint16_t command_id = 0;
-                    std::memcpy(&command_id, &buffer[sizeof(FrameHeader)], sizeof(command_id));
-                    const uint8_t* payload =
-                        &buffer[sizeof(FrameHeader) + sizeof(command_id)];
-                    const decode_result result =
-                        decode_packet(self->packets_, command_id, payload, data_length);
-                    if (result == decode_result::invalid_length)
-                    {
-                        ++self->status_.length_error_count;
-                        state = STEP_HEADER_SOF;
-                        break;
-                    }
-
-                    self->status_.online = true;
-                    ++self->status_.valid_frame_count;
-                    if (result == decode_result::unknown)
-                    {
-                        ++self->status_.unknown_packet_count;
-                    }
-                    const update_info update{command_id, true, result == decode_result::known};
-                    if (self->cfg_.on_update_callback)
-                    {
-                        // Runs synchronously in the referee receive thread and must not block.
-                        self->cfg_.on_update_callback(self->packets_, update);
-                    }
-                    state = STEP_HEADER_SOF;
-                }
-                break;
-
-            default:
-                state = STEP_HEADER_SOF;
-                break;
-            }
+            result = stopped;
         }
-
-        tx_semaphore_put(&self->heartbeat_sem_);
-        tx_thread_sleep(1);
     }
+    // Callbacks only access static storage, even if aborting DMA failed.
+    (void)tx_thread_terminate(&worker);
+    (void)tx_thread_delete(&worker);
+    return initialization = result;
 }
 
 } // namespace referee

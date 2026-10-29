@@ -1,15 +1,34 @@
 #pragma once
-
-#include "bsp_usart.hpp"
 #include "callback.hpp"
 #include "referee_protocol.hpp"
-#include "tx_api.h"
-#include "config.hpp"
-
-#include <type_traits>
+#include "bsp_usart.hpp"
 
 namespace referee
 {
+// Only wire packet types declared in this protocol have a command mapping.
+template <typename T> inline constexpr uint16_t command_id = 0xffff;
+
+template <> inline constexpr uint16_t command_id<GameStatus_t> = RefereeID::GameStatus;
+template <> inline constexpr uint16_t command_id<GameResult_t> = RefereeID::GameResult;
+template <> inline constexpr uint16_t command_id<RobotHP_t> = RefereeID::RobotHP;
+template <> inline constexpr uint16_t command_id<EventData_t> = RefereeID::EventData;
+template <> inline constexpr uint16_t command_id<RefereeWarning_t> = RefereeID::RefereeWarning;
+template <> inline constexpr uint16_t command_id<DartInfo_t> = RefereeID::DartInfo;
+template <> inline constexpr uint16_t command_id<GameRobotStatus_t> = RefereeID::GameRobotStatus;
+template <> inline constexpr uint16_t command_id<PowerHeatData_t> = RefereeID::PowerHeatData;
+template <> inline constexpr uint16_t command_id<GameRobotPos_t> = RefereeID::GameRobotPos;
+template <> inline constexpr uint16_t command_id<Buff_t> = RefereeID::Buff;
+template <> inline constexpr uint16_t command_id<RobotHurt_t> = RefereeID::RobotHurt;
+template <> inline constexpr uint16_t command_id<ShootData_t> = RefereeID::ShootData;
+template <>
+inline constexpr uint16_t command_id<BulletRemaining_t> = RefereeID::ProjectileAllowance;
+template <> inline constexpr uint16_t command_id<RfidStatus_t> = RefereeID::RfidStatus;
+template <> inline constexpr uint16_t command_id<DartClientCmd_t> = RefereeID::DartClientCmd;
+template <>
+inline constexpr uint16_t command_id<GroundRobotPosition_t> = RefereeID::GroundRobotPosition;
+template <> inline constexpr uint16_t command_id<RadarMarkData_t> = RefereeID::RadarMarkData;
+template <> inline constexpr uint16_t command_id<SentryInfo_t> = RefereeID::SentryInfo;
+template <> inline constexpr uint16_t command_id<RadarInfo_t> = RefereeID::RadarInfo;
 
 struct robot_interaction_data
 {
@@ -18,78 +37,73 @@ struct robot_interaction_data
     uint8_t payload[protocol::max_robot_interaction_payload]{};
 };
 
-struct packet_store
+template <>
+inline constexpr uint16_t command_id<robot_interaction_data> = RefereeID::RoboInteractData;
+
+// Latest value of one packet type. Timestamps use HAL milliseconds and may wrap.
+template <typename T> struct sample
 {
-    GameStatus_t game_status{};
-    GameRobotStatus_t game_robot_status{};
-    PowerHeatData_t power_heat_data{};
-    Buff_t buff{};
-    RobotHurt_t robot_hurt{};
-    DartInfo_t dart_info{};
-    DartClientCmd_t dart_client_command{};
-    robot_interaction_data robot_interaction{};
+    T data{};
+    uint32_t received_ms = 0;
+    uint32_t sequence = 0;
 };
 
-struct update_info
-{
-    uint16_t command_id = 0;
-    bool got_valid_frame = false;
-    bool is_known_packet = false;
-};
+// Thread-safe snapshot. False before the first valid packet; destination stays unchanged.
+// Cached values survive link loss: check received_ms and link diagnostics before use.
+template <typename T> bool read(sample<T>& destination);
 
-struct communication_status
-{
-    bool online = false;
-    uint32_t valid_frame_count = 0;
-    uint32_t crc8_error_count = 0;
-    uint32_t crc16_error_count = 0;
-    uint32_t length_error_count = 0;
-    uint32_t unknown_packet_count = 0;
-};
+// Called in the receive thread after caching this type. No blocking or retained references.
+// Bind only the packet types that need per-frame handling; other types are still cached.
+template <typename T> using receive_callback = pnxtypes::callback<void(const sample<T>&)>;
 
-using update_callback = core::callback<void(const packet_store&, const update_info&)>;
+struct callbacks
+{
+    receive_callback<GameStatus_t> game_status{};
+    receive_callback<GameResult_t> game_result{};
+    receive_callback<RobotHP_t> robot_hp{};
+    receive_callback<EventData_t> event_data{};
+    receive_callback<RefereeWarning_t> referee_warning{};
+    receive_callback<DartInfo_t> dart_info{};
+    receive_callback<GameRobotStatus_t> game_robot_status{};
+    receive_callback<PowerHeatData_t> power_heat_data{};
+    receive_callback<GameRobotPos_t> game_robot_pos{};
+    receive_callback<Buff_t> buff{};
+    receive_callback<RobotHurt_t> robot_hurt{};
+    receive_callback<ShootData_t> shoot_data{};
+    receive_callback<BulletRemaining_t> projectile_allowance{};
+    receive_callback<RfidStatus_t> rfid_status{};
+    receive_callback<DartClientCmd_t> dart_client_cmd{};
+    receive_callback<GroundRobotPosition_t> ground_robot_position{};
+    receive_callback<RadarMarkData_t> radar_mark_data{};
+    receive_callback<SentryInfo_t> sentry_info{};
+    receive_callback<RadarInfo_t> radar_info{};
+    receive_callback<robot_interaction_data> robo_interact_data{};
+};
 
 struct config
 {
-    bsp::usart::port uart_port = app::uart::referee;
-    uint32_t thread_priority = 8;
-    // Invoked synchronously in the referee receive thread after a valid frame is processed.
-    // The callback must not block. Configuration is fixed by the first successful init().
-    update_callback on_update_callback{};
+    bsp::usart::config uart;
+    uint32_t thread_priority = 5;
+    ULONG period_ticks = 1;
+    uint32_t offline_timeout_ms = 1000;
 };
 
-static_assert(std::is_trivially_copyable_v<robot_interaction_data>);
-static_assert(std::is_trivially_copyable_v<packet_store>);
-static_assert(std::is_trivially_copyable_v<update_info>);
-static_assert(std::is_trivially_copyable_v<communication_status>);
-
-class service
+struct state
 {
-public:
-    static service& instance();
-
-    types::status init(const config& cfg = {});
-    TX_SEMAPHORE* heartbeat_sem() { return &heartbeat_sem_; }
-    const packet_store& packets() const noexcept { return packets_; }
-    const communication_status& status() const noexcept { return status_; }
-
-    void push_rx(const uint8_t* data, uint16_t len);
-
-private:
-    static void referee_thread_entry(ULONG arg);
-    bool create_resources();
-    static void referee_rx_callback(bsp::usart::port port, const bsp::usart::rx_frame& frame);
-
-    config cfg_{};
-    TX_THREAD thread_{};
-    TX_SEMAPHORE heartbeat_sem_{};
-    alignas(8) uint8_t stack_[1536]{};
-
-    RefereeRingBuffer rx_fifo_{};
-    packet_store packets_{};
-    communication_status status_{};
-    uint8_t* rx_buffer_ = nullptr;
-    bool initialized_ = false;
+    uint32_t crc8_error_count = 0;
+    uint32_t crc16_error_count = 0;
+    uint32_t length_error_count = 0;
+    uint32_t frame_timeout_count = 0;
+    uint32_t rx_dropped_bytes = 0;
+    uint32_t sequence = 0;
+    uint32_t received_ms = 0;
+    uint32_t updated_ms = 0;
+    bool online = false;
 };
 
+// Serialized startup; owns UART RX for firmware lifetime. Initialization failure is latched.
+// Do not terminate the worker externally. Later calls return the first result, without rebinding.
+pnxtypes::status init(const config& settings, const callbacks& handlers = {});
+// Consistent link diagnostics; read(sample<T>&) retrieves cached packet data.
+state read();
 } // namespace referee

@@ -1,7 +1,7 @@
-# pragma once
+#pragma once
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
 
 /* 通信协议内容: 常规链路由裁判系统服务器和主控模块进行数据转发，从电源管理模块的User串口收发数据 */
 
@@ -16,20 +16,20 @@
 struct FrameHeader
 {
     uint8_t SOF;
-    uint16_t dataLength; 
+    uint16_t dataLength;
     uint8_t seq;
     uint8_t crc8;
 } __attribute__((packed));
 
 /**
  * @struct GameStatus_t
- * @brief 0x0001 比赛状态数据，固定以1Hz频率发送 
+ * @brief 0x0001 比赛状态数据，固定以1Hz频率发送
  * @param Game_type 比赛类型
  * @param Game_progress 当前比赛阶段
  * @param Stage_remain_time 当前阶段剩余时间
  * @param SyncTimeStamp UNIX 时间，当机器人正确连接到裁判系统的 NTP 服务器后生效
  */
- struct GameStatus_t
+struct GameStatus_t
 {
     uint8_t Game_type : 4;
     uint8_t Game_progress : 4;
@@ -61,20 +61,20 @@ struct GameResult_t
  */
 struct RobotHP_t
 {
-    uint16_t ally_1_robot_HP;  
-    uint16_t ally_2_robot_HP;  
-    uint16_t ally_3_robot_HP;  
-    uint16_t ally_4_robot_HP;  
-    uint16_t reserved;  
-    uint16_t ally_7_robot_HP;  
-    uint16_t ally_outpost_HP;  
-    uint16_t ally_base_HP; 
+    uint16_t ally_1_robot_HP;
+    uint16_t ally_2_robot_HP;
+    uint16_t ally_3_robot_HP;
+    uint16_t ally_4_robot_HP;
+    uint16_t reserved;
+    uint16_t ally_7_robot_HP;
+    uint16_t ally_outpost_HP;
+    uint16_t ally_base_HP;
 } __attribute__((packed));
 
 /**
  * @struct EventData_t
  * @brief  0x0101 场地事件数据，固定以1Hz频率发送
- * @param event_data 事件数据 
+ * @param event_data 事件数据
  */
 struct EventData_t
 {
@@ -109,7 +109,7 @@ struct DartInfo_t
 
 /**
  * @struct GameRobotStatus_t
- * @brief 0x0201 机器人性能体系状态数据结构体，固定以10Hz频率发送 
+ * @brief 0x0201 机器人性能体系状态数据结构体，固定以10Hz频率发送
  * @param robot_id 本机器人 ID
  * @param robot_level 机器人等级
  * @param current_HP 当前血量
@@ -137,7 +137,7 @@ struct GameRobotStatus_t
 
 /**
  * @struct PowerHeatData_t
- * @brief 0x0202 实时底盘功率和枪口热量数据结构体，固定以10Hz频率发送 
+ * @brief 0x0202 实时底盘功率和枪口热量数据结构体，固定以10Hz频率发送
  * @param reserved1 保留位1
  * @param reserved2 保留位2
  * @param reserved3 保留位3 (占4字节)
@@ -157,7 +157,7 @@ struct PowerHeatData_t
 
 /**
  * @struct GameRobotPos_t
- * @brief 0x0203 机器人位置数据结构体，固定以1Hz频率发送 
+ * @brief 0x0203 机器人位置数据结构体，固定以1Hz频率发送
  * @param x 本机器人位置 x 坐标，单位：m
  * @param y 本机器人位置 y 坐标，单位：m
  * @param yaw 本机器人测速模块的朝向，单位：度 正北为 0 度
@@ -192,8 +192,10 @@ struct Buff_t
 /**
  * @struct RobotHurt_t
  * @brief 0x0206 伤害状态数据结构体，伤害发生时发送
- * @param armor_id bit 0-3：当扣血原因为装甲模块被弹丸攻击、受撞击、离线或测速模块离线时，该 4 bit 组成的数值为装甲模块或测速模块的 ID 编号；当其他原因导致扣血时，该数值为 0
- * @param HP_deduction_reason bit 4-7：血量变化类型，0：装甲模块被弹丸攻击导致扣血，1：裁判系统重要模块离线导致扣血，2：射击初速度超限导致扣血，3：枪口热量超限导致扣血，4：底盘功率超限导致扣血，5：装甲模块受到撞击导致扣血
+ * @param armor_id bit 0-3：当扣血原因为装甲模块被弹丸攻击、受撞击、离线或测速模块离线时，该 4 bit
+ * 组成的数值为装甲模块或测速模块的 ID 编号；当其他原因导致扣血时，该数值为 0
+ * @param HP_deduction_reason bit
+ * 4-7：血量变化类型，0：装甲模块被弹丸攻击导致扣血，1：裁判系统重要模块离线导致扣血，2：射击初速度超限导致扣血，3：枪口热量超限导致扣血，4：底盘功率超限导致扣血，5：装甲模块受到撞击导致扣血
  */
 struct RobotHurt_t
 {
@@ -276,7 +278,7 @@ struct GroundRobotPosition_t
     float standard_4_x;
     float reserved1;
     float reserved2;
-}__attribute__((packed));
+} __attribute__((packed));
 
 /**
  * @struct RadarMarkData_t
@@ -393,43 +395,11 @@ enum RefereeID
     CustomClient2Robot = 0x0311,      // 自定义客户端发送给机器人，频率上限75Hz
 };
 
-struct RefereeRingBuffer 
-{
-    uint8_t _buffer[256] = {0};
-    volatile uint16_t head = 0; // 写入位置
-    volatile uint16_t tail = 0; // 读取位置
-    
-    void push(const uint8_t* data, uint16_t len) 
-    {
-        for(uint16_t i=0; i<len; i++) 
-        {
-            _buffer[head] = data[i];
-            head = (head + 1) % 256;
-        }
-    }
-    
-    bool pop(uint8_t& byte) 
-    {
-        if(head == tail) 
-            return false;
-        byte = _buffer[tail];
-        tail = (tail + 1) % 256;
-        return true;
-    }
-};
-
-enum UnpackState
-{
-    STEP_HEADER_SOF = 0,
-    STEP_LENGTH_SEQ,
-    STEP_DATA_CRC16,
-};
-
 namespace referee::protocol
 {
 
-inline constexpr std::size_t max_data_length = 200;
-inline constexpr std::size_t max_robot_interaction_payload =
+inline constexpr uint16_t max_data_length = 200;
+inline constexpr uint16_t max_robot_interaction_payload =
     max_data_length - sizeof(RoboInteractData_t);
 
 } // namespace referee::protocol
