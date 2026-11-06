@@ -42,6 +42,9 @@ void run(ULONG)
     parameters.static_gyro_tolerance = cfg::eskf::static_gyro_tolerance;
     parameters.static_filter_time_constant = cfg::eskf::static_filter_time_constant;
     parameters.zero_rate_min_time = cfg::eskf::zero_rate_min_time;
+    parameters.zero_rate_exit_gyro_tolerance = cfg::eskf::zero_rate_exit_gyro_tolerance;
+    parameters.zero_rate_nis_gate = cfg::eskf::zero_rate_nis_gate;
+    parameters.zero_rate_attitude_ramp_time = cfg::eskf::zero_rate_attitude_ramp_time;
     parameters.initial_tilt_stddev = cfg::eskf::initial_tilt_stddev;
     parameters.initial_yaw_stddev = cfg::eskf::initial_yaw_stddev;
     parameters.initial_bias_stddev = cfg::eskf::initial_bias_stddev;
