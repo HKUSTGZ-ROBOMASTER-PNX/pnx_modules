@@ -14,6 +14,7 @@
  *             NIS = rᵀS⁻¹r gated against χ²(2); skipped for impact_hold after a jerk spike
  *
  *   zero-rate when quasi-static long enough: ω_m − b = 0, H = [0, I]  (makes z bias observable)
+ *             bias gain applies immediately; attitude gain ramps in to keep feedback continuous
  *
  * Accel-correction time constant ≈ accel_noise / gyro_noise (seconds), independent of sample rate.
  */
@@ -43,8 +44,11 @@ public:
         float static_accel_tolerance = 0.05f; // g
         float static_gyro_tolerance = 0.02f;  // rad/s, on low-passed bias-corrected rate
         float static_filter_time_constant = 0.05f; // s, low-pass used by the static detector
-        float zero_rate_min_time = 1.0f;    // s static before zero-rate updates; ≤ 0 disables
-        float initial_tilt_stddev = 0.1f;   // rad, roll/pitch (tilt) at start or re-align
+        float zero_rate_min_time = 0.0f; // s static before zero-rate updates; ≤ 0 disables
+        float zero_rate_exit_gyro_tolerance = 0.05f; // rad/s, instantaneous motion exit
+        float zero_rate_nis_gate = 11.34f;           // χ²(3 dof, 99 %); ≤ 0 disables gating
+        float zero_rate_attitude_ramp_time = 0.5f; // s; ≤ 0 applies the full attitude gain
+        float initial_tilt_stddev = 0.1f;            // rad, roll/pitch at start or re-align
         float initial_yaw_stddev = 1.0e-3f; // rad; yaw is *defined* at start, keep this small
         float initial_bias_stddev = 0.01f;  // rad/s
         float min_bias_stddev = 2.0e-4f;    // rad/s floor; keeps float32 P well conditioned
@@ -124,6 +128,7 @@ public:
         }
 
         const float gyro[3] = {gx, gy, gz};
+        // The driver has already removed the fixed offset; ESKF estimates the residual bias.
         const float w[3] = {gx - gyro_bias_[0], gy - gyro_bias_[1], gz - gyro_bias_[2]};
         predict(w, dt);
 
@@ -147,12 +152,15 @@ public:
             filtered_angular_rate_[i] += alpha * (w[i] - filtered_angular_rate_[i]);
         }
         filtered_accel_norm_ += alpha * (accel_norm - filtered_accel_norm_);
+        const float corrected_rate_norm = math::magnitude({w[0], w[1], w[2]});
+        const float filtered_rate_norm = math::magnitude({filtered_angular_rate_[0],
+            filtered_angular_rate_[1], filtered_angular_rate_[2]});
         const bool quasi_static =
             !state_.impact &&
             std::fabs(filtered_accel_norm_ - 1.0f) < cfg_.static_accel_tolerance &&
-            math::magnitude({filtered_angular_rate_[0], filtered_angular_rate_[1],
-                filtered_angular_rate_[2]}) < cfg_.static_gyro_tolerance;
-        static_time_ = quasi_static ? static_time_ + dt : 0.0f;
+            filtered_rate_norm < cfg_.static_gyro_tolerance;
+        const bool fast_motion = corrected_rate_norm >= cfg_.zero_rate_exit_gyro_tolerance;
+        static_time_ = quasi_static && !fast_motion ? static_time_ + dt : 0.0f;
 
         state_.accel_updated = false;
         if (!state_.impact && accel_norm > 0.1f)
@@ -160,12 +168,13 @@ public:
             update_accel(a, accel_norm, dt, quasi_static);
         }
 
-        state_.zero_rate_active =
+        const bool zero_rate_ready =
             cfg_.zero_rate_min_time > 0.0f && static_time_ >= cfg_.zero_rate_min_time;
-        if (state_.zero_rate_active)
+        if (!zero_rate_ready)
         {
-            update_zero_rate(gyro, dt);
+            zero_rate_update_time_ = 0.0f;
         }
+        state_.zero_rate_active = zero_rate_ready && update_zero_rate(gyro, dt);
         update_output(false);
     }
 
@@ -187,6 +196,7 @@ private:
     float filtered_angular_rate_[3] = {};
     float impact_remaining_ = 0.0f;
     float static_time_ = 0.0f;
+    float zero_rate_update_time_ = 0.0f;
     float reject_time_ = 0.0f;
     float previous_yaw_ = 0.0f;
 
@@ -281,7 +291,7 @@ private:
         state_.accel_updated = true;
     }
 
-    void update_zero_rate(const float gyro[3], float dt)
+    bool update_zero_rate(const float gyro[3], float dt)
     {
         float H[3][6] = {};
         H[0][3] = H[1][4] = H[2][5] = 1.0f;
@@ -290,10 +300,28 @@ private:
         const float measurement_variance = cfg_.gyro_noise * cfg_.gyro_noise / dt;
 
         update_terms terms;
-        if (compute_update_terms(H, residual, measurement_variance, terms))
+        if (!compute_update_terms(H, residual, measurement_variance, terms))
         {
-            apply_update(H, residual, measurement_variance, terms);
+            return false;
         }
+        if (cfg_.zero_rate_nis_gate > 0.0f && terms.nis > cfg_.zero_rate_nis_gate)
+        {
+            return false;
+        }
+        float attitude_gain = 1.0f;
+        if (cfg_.zero_rate_attitude_ramp_time > 0.0f)
+        {
+            attitude_gain = zero_rate_update_time_ / cfg_.zero_rate_attitude_ramp_time;
+            attitude_gain = attitude_gain < 1.0f ? attitude_gain : 1.0f;
+            zero_rate_update_time_ += dt;
+            if (zero_rate_update_time_ > cfg_.zero_rate_attitude_ramp_time)
+            {
+                zero_rate_update_time_ = cfg_.zero_rate_attitude_ramp_time;
+            }
+        }
+        // Bias converges at full gain while the correlated attitude correction enters gradually.
+        apply_update(H, residual, measurement_variance, terms, attitude_gain);
+        return true;
     }
 
     bool compute_update_terms(const float H[3][6], const float residual[3],
@@ -353,7 +381,7 @@ private:
 
     // K = P Hᵀ S⁻¹, inject, Joseph form P = (I−KH) P (I−KH)ᵀ + rv·K Kᵀ.
     void apply_update(const float H[3][6], const float residual[3], float measurement_variance,
-        const update_terms& terms)
+        const update_terms& terms, float attitude_gain_scale = 1.0f)
     {
         float K[6][3];
         for (int i = 0; i < 6; ++i)
@@ -362,6 +390,10 @@ private:
             {
                 K[i][j] = terms.PHt[i][0] * terms.S_inv[0][j] +
                           terms.PHt[i][1] * terms.S_inv[1][j] + terms.PHt[i][2] * terms.S_inv[2][j];
+                if (i < 3)
+                {
+                    K[i][j] *= attitude_gain_scale;
+                }
             }
         }
 
