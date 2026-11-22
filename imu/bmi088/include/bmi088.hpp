@@ -1,6 +1,7 @@
 #pragma once
 
 #include "status.hpp"
+#include "attitude.hpp"
 #include "geometry.hpp"
 #include "config.hpp"
 #include "tx_api.h"
@@ -10,8 +11,9 @@ namespace imu
 
 // Start the configured BMI088 acquisition/ESKF service from serialized ThreadX startup.
 // Owns its sensor, SPI access and heater for firmware lifetime; do not use a second driver
-// on the same hardware. Subscribe to imu::attitude::output for readiness and measurements.
-pnxtypes::status start_bmi088();
+// on the same hardware. The output must outlive the service (firmware lifetime).
+// Calls to start must be serialized; the first result and output are retained.
+pnxtypes::status start_bmi088(attitude::output& output);
 
 // Wiring is supplied by the application; the driver never selects a board.
 struct bmi088_config

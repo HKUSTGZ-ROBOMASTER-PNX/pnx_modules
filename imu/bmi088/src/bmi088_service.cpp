@@ -10,13 +10,13 @@ namespace imu
 namespace
 {
 namespace cfg = user_config::ahrs;
-using attitude::output;
 using attitude::phase;
 using attitude::source;
 using attitude::state;
 using pnxtypes::status;
 imu::bmi088 sensor{user_config::bmi088};
 estimation::attitude_eskf filter;
+attitude::output* output = nullptr;
 TX_THREAD worker{};
 alignas(8) uint8_t stack[cfg::bmi088_stack_size]{};
 alignas(8) uint8_t heater_stack[user_config::bmi088_heater_stack_size]{};
@@ -57,7 +57,7 @@ void run(ULONG)
         current.online = false;
         current.stage = phase::starting;
         current.result = status::busy;
-        (void)output.publish(current);
+        (void)output->publish(current);
 
         auto result = sensor.configure();
         const auto started_ms = HAL_GetTick();
@@ -177,7 +177,7 @@ void run(ULONG)
 
             current.received_ms = HAL_GetTick();
             current.result = current.online ? status::ok : status::busy;
-            (void)output.publish(current);
+            (void)output->publish(current);
             tx_thread_sleep(cfg::sample_period_ticks);
         }
 
@@ -187,7 +187,7 @@ void run(ULONG)
         current.online = false;
         current.stage = phase::fault;
         current.result = stopped == status::ok ? result : stopped;
-        (void)output.publish(current);
+        (void)output->publish(current);
         const auto failed_ms = HAL_GetTick();
         while (HAL_GetTick() - failed_ms < cfg::retry_period_ms)
         {
@@ -197,18 +197,19 @@ void run(ULONG)
 }
 } // namespace
 
-pnxtypes::status start_bmi088()
+pnxtypes::status start_bmi088(attitude::output& publisher)
 {
     if (attempted)
     {
         return initialization;
     }
     attempted = true;
-    initialization = output.init();
+    initialization = publisher.init();
     if (initialization != status::ok)
     {
         return initialization;
     }
+    output = &publisher;
     if (user_config::bmi088_heater_enabled)
     {
         initialization = imu::bmi088_heater::init(user_config::bmi088_thermal,

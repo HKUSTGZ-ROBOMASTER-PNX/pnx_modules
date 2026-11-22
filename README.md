@@ -15,14 +15,32 @@ target。各服务由应用显式调用对应启动入口，链接模块不会�
 
 | 模块 | 启动入口 | 输出 |
 | --- | --- | --- |
-| BMI088 姿态 | `imu::start_bmi088()` | `imu::attitude::output`，使用 `msg` 订阅 |
-| DMIMU 姿态 | `imu::start_dmimu()`；请求模式传共享 CAN 互斥量 | 同一姿态 topic |
+| BMI088 姿态 | `imu::start_bmi088(output)` | 应用提供的姿态 topic，使用 `msg` 订阅 |
+| DMIMU 姿态 | `imu::start_dmimu(output, mutex)` | 同上；请求模式必须传 CAN 互斥量 |
+| BMI270 姿态 | `imu::start_bmi270(output)` | 姿态 topic、反馈与校准快照 |
 | BMI088 温控 | BMI088 服务负责启动；独立使用时调用 `imu::bmi088_heater::init()` | `imu::bmi088_heater::read()` |
 | 裁判接收 | `referee::init(config)` | `referee::read(sample)` 按类型读取，`referee::read()` 获取链路诊断 |
 
-IMU 通过 `boards.<板型>.ahrs_device` 选择，CMake 仅编译一个姿态服务，选择 `none` 时不编译
-姿态服务或温控线程。BMI088 选择额外链接 CMSIS-DSP；DMIMU 不运行 ESKF。
-使用方式、资源所有权和错误恢复详见 [IMU 文档](imu/README.md)。
+`imu::attitude::output` 是 topic 类型，应用为每个 IMU 创建独立对象（如
+`static imu::attitude::output output;`）并传入启动接口，
+三个服务可同时运行，各自创建一个采集线程。启动调用须串行，topic 须存活到固件结束。
+DMIMU 请求模式使用的共享互斥量也须存活到固件结束。
+BMI088 在主板运行 ESKF；DMIMU、BMI270 使用外置板解算结果。配置集中在 `configs/user_config.json`。
+
+CAN 服务须在应用初始化总线前启动以注册接收。BMI270 直接发送控制帧并消费总线错误信号量。
+应用负责 CAN 初始化和故障恢复。
+
+启动成功后在读取任务中订阅并保留订阅者，循环读取：
+
+```cpp
+auto subscriber = output.subscribe();
+imu::attitude::state data{};
+const auto result = subscriber.read(data);
+```
+
+订阅失败可重试；读取成功后检查 `online`、`stage`、`sequence` 和 `received_ms`，topic 只保留最新值。
+角度为 rad、角速度为 rad/s、加速度为 m/s²（包含重力）。BMI088 / BMI270 四元数为 NWU Body-to-World、
+WXYZ；DMIMU 沿用设备坐标约定。
 
 温控固定使用板载 BMI088 加热资源；独立启动时传入温控参数、线程配置与静态线程栈：
 `imu::bmi088_heater::init(thermal, config, stack, sizeof(stack))`。
@@ -38,6 +56,29 @@ H723 的实现在 `bmi088_heater.cpp` 内部独占 TIM3、TIM6 / DMA2 Stream6，
 实际断点关断时序仍需上板用示波器验证。
 
 F407 保留原有软件温控超时行为，不接入本次 H723 的硬件保护。当前 JSON 默认关闭 F407 加热。
+
+## BMI270
+
+通过 [bmi270.hpp](imu/bmi270/include/bmi270.hpp) 接入；`boards.<板型>.bmi270_can` 选择总线，
+`bmi270` 配置协议参数，`ahrs` 配置线程优先级、栈和等待周期。
+使用固定 1 Mbps Classic CAN 标准帧：`command_id=0x270`、`target_id=0x271`；
+`0x271～0x274` 依次反馈 gyro、四元数、accel、Euler，`0x275` 为控制回复。
+
+`bmi270.receive_gyro / receive_quaternion / receive_accel / receive_euler` 选择外置板发送的反馈，
+禁用帧不参与在线判断。至少选择一类反馈，启动流程完成且所选反馈全部有效后 topic 才在线。
+`imu::bmi270_read_feedback(sample)` 读取各帧最新缓存，使用时检查对应的 `*_valid`、`*_received_ms`
+和 `*_updates`，各帧不保证同步；仅选 gyro / accel 时在线不代表姿态有效。
+
+- `calibrate_on_start=true`：静止标定本次 RAM gyro 偏置，accel 偏差清零。
+- `calibrate_on_start=false`：整组下发 `gyro_offset`（rad/s，每轴 ±0.15）和
+  `accel_offset`（m/s²，每轴 ±100），外置板在融合前执行 gyro 减偏差、accel 加偏差，确认后运行。
+
+两种方式均不写 Flash，也不在主板重复补偿；主板与外置板固件须配套更新。
+在应用线程中用 `imu::bmi270_request()` 请求 `imu::bmi270::command::calibrate` 或 `set_offsets`，
+通过 `bmi270_read_control(control)` / `bmi270_read_calibration(calibration)` 读取控制与最近完整状态
+（命名空间均为 `imu`）。
+命令应答超时可用 `bmi270_retry()` 保留原 token 重试；已知外置板重启后调用 `bmi270_reset()`。
+这些接口和快照读取会等待 BMI270 工作线程处理队列请求。
 
 ## 裁判接收
 

@@ -9,7 +9,8 @@ enum class source : uint8_t
 {
     none,
     bmi088,
-    dmimu
+    dmimu,
+    bmi270
 };
 enum class phase : uint8_t
 {
@@ -42,8 +43,8 @@ struct state
     bool zero_rate_active = false;
 };
 
-// Subscribe after starting the selected device service. Only one service may publish.
-// Latest-value delivery; consumers must check online, stage and timestamp.
-// BMI088 uses ESKF NWU body-to-world; DMIMU retains its device frame convention.
-inline msg::topic<state> output;
+// The application owns each topic and keeps it alive for the service lifetime.
+// Latest-value consumers must check online, stage and timestamp.
+// BMI088 and BMI270 use NWU body-to-world; DMIMU retains its device convention.
+using output = msg::topic<state>;
 } // namespace imu::attitude

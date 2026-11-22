@@ -1,13 +1,15 @@
 #pragma once
 #include "bsp_can.hpp"
+#include "attitude.hpp"
 #include "geometry.hpp"
 
 namespace imu
 {
 // Start the configured receive service before the application's shared CAN initialization.
 // Request mode requires a firmware-lifetime mutex also used by every TX/lifecycle caller
-// on that bus. The service never starts/stops CAN; subscribe to imu::attitude::output.
-pnxtypes::status start_dmimu(TX_MUTEX* can_mutex = nullptr);
+// on that bus. The output must have firmware lifetime. Start calls must be serialized;
+// the first result and output are retained. The service never starts/stops CAN.
+pnxtypes::status start_dmimu(attitude::output& output, TX_MUTEX* can_mutex = nullptr);
 
 // Single owner thread. The application copies CAN frames in the ISR and supplies
 // their reception timestamps in monotonic milliseconds (uint32_t wrap is supported).

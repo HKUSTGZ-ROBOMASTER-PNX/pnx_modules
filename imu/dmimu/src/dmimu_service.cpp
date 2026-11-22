@@ -10,12 +10,12 @@ namespace imu
 namespace
 {
 namespace cfg = user_config::ahrs;
-using attitude::output;
 using attitude::phase;
 using attitude::source;
 using attitude::state;
 using pnxtypes::status;
 imu::dmimu sensor;
+attitude::output* output = nullptr;
 TX_THREAD worker{};
 TX_QUEUE rx_queue{};
 TX_MUTEX* can_mutex = nullptr;
@@ -175,13 +175,13 @@ void run(ULONG)
             }
         }
 
-        (void)output.publish(current);
+        (void)output->publish(current);
         tx_thread_sleep(cfg::dmimu_wait_ticks);
     }
 }
 } // namespace
 
-pnxtypes::status start_dmimu(TX_MUTEX* bus_mutex)
+pnxtypes::status start_dmimu(attitude::output& publisher, TX_MUTEX* bus_mutex)
 {
     if (attempted)
     {
@@ -199,11 +199,12 @@ pnxtypes::status start_dmimu(TX_MUTEX* bus_mutex)
     {
         return initialization;
     }
-    initialization = output.init();
+    initialization = publisher.init();
     if (initialization != status::ok)
     {
         return initialization;
     }
+    output = &publisher;
     if (tx_queue_create(&rx_queue, const_cast<CHAR*>("dmimu rx"), message_words, rx_storage,
             sizeof(rx_storage)) != TX_SUCCESS)
     {
