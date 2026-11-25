@@ -201,8 +201,10 @@ struct bmi270_control
 // Register before CAN initialization. The service sends control frames and consumes
 // the bus error semaphore. The application owns CAN initialization and recovery.
 // The output topic must remain alive for the firmware lifetime. Start calls must be
-// serialized; the first result and output are retained.
-pnxtypes::status start_bmi270(attitude::output& output);
+// serialized; the first result, output and mutex are retained. An optional mutex must
+// remain alive for the firmware lifetime and be shared by all foreground CAN senders;
+// sends never wait for it. Without a mutex, the caller must ensure TX serialization.
+pnxtypes::status start_bmi270(attitude::output& output, TX_MUTEX* bus_mutex = nullptr);
 // The following APIs run in application threads and wait for the BMI270 worker.
 // Keep the calling thread alive until the call returns.
 // One outstanding command. Calibrate discovers/reconciles the last

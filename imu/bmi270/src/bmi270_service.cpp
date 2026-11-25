@@ -17,6 +17,7 @@ bmi270 sensor;
 TX_THREAD worker{};
 TX_QUEUE rx_queue{};
 attitude::output* output = nullptr;
+TX_MUTEX* can_mutex = nullptr;
 alignas(8) uint8_t stack[cfg::bmi270_stack_size]{};
 
 struct rx_message
@@ -241,7 +242,8 @@ void run(ULONG)
         }
 
         const bool refresh_stream = now_ms - last_stream_ms >= stream_refresh_ms;
-        if (can_ready && (refresh_stream || command.send))
+        if (can_ready && (refresh_stream || command.send) &&
+            (can_mutex == nullptr || tx_mutex_get(can_mutex, TX_NO_WAIT) == TX_SUCCESS))
         {
             bool sent_command = !refresh_stream;
             auto sent =
@@ -251,6 +253,10 @@ void run(ULONG)
             {
                 sent_command = true;
                 sent = sensor.send(command.operation, command.token, command.part);
+            }
+            if (can_mutex != nullptr)
+            {
+                (void)tx_mutex_put(can_mutex);
             }
             if (!sent_command && sent == status::ok)
             {
@@ -268,7 +274,7 @@ void run(ULONG)
 }
 } // namespace
 
-pnxtypes::status start_bmi270(attitude::output& target)
+pnxtypes::status start_bmi270(attitude::output& target, TX_MUTEX* bus_mutex)
 {
     if (attempted)
     {
@@ -286,6 +292,7 @@ pnxtypes::status start_bmi270(attitude::output& target)
         return initialization;
     }
     output = &target;
+    can_mutex = bus_mutex;
     if (tx_queue_create(&rx_queue, const_cast<CHAR*>("bmi270 rx"), message_words, rx_storage,
             sizeof(rx_storage)) != TX_SUCCESS)
     {

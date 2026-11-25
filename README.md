@@ -17,18 +17,21 @@ target。各服务由应用显式调用对应启动入口，链接模块不会�
 | --- | --- | --- |
 | BMI088 姿态 | `imu::start_bmi088(output)` | 应用提供的姿态 topic，使用 `msg` 订阅 |
 | DMIMU 姿态 | `imu::start_dmimu(output, mutex)` | 同上；请求模式必须传 CAN 互斥量 |
-| BMI270 姿态 | `imu::start_bmi270(output)` | 姿态 topic、反馈与校准快照 |
+| BMI270 姿态 | `imu::start_bmi270(output, mutex)`，互斥量指针可省略 | 姿态 topic、反馈与校准快照 |
 | BMI088 温控 | BMI088 服务负责启动；独立使用时调用 `imu::bmi088_heater::init()` | `imu::bmi088_heater::read()` |
 | 裁判接收 | `referee::init(config)` | `referee::read(sample)` 按类型读取，`referee::read()` 获取链路诊断 |
 
 `imu::attitude::output` 是 topic 类型，应用为每个 IMU 创建独立对象（如
 `static imu::attitude::output output;`）并传入启动接口，
 三个服务可同时运行，各自创建一个采集线程。启动调用须串行，topic 须存活到固件结束。
-DMIMU 请求模式使用的共享互斥量也须存活到固件结束。
+DMIMU 请求模式和 BMI270 使用的共享互斥量也须存活到固件结束，两者均传指针。
 BMI088 在主板运行 ESKF；DMIMU、BMI270 使用外置板解算结果。配置集中在 `configs/user_config.json`。
 
 CAN 服务须在应用初始化总线前启动以注册接收。BMI270 直接发送控制帧并消费总线错误信号量。
 应用负责 CAN 初始化和故障恢复。
+BMI270 可用 `imu::start_bmi270(output)` 或显式传 `nullptr` 无锁启动，由应用保证发送串行化。
+传入互斥量指针时，BMI270 与该总线上的其他发送者须使用同一把互斥量。服务仅在发送时以 TX_NO_WAIT 取锁，
+竞争时保留待发操作到后续周期，不在接收解码、状态发布或请求回调期间持锁。
 
 启动成功后在读取任务中订阅并保留订阅者，循环读取：
 
@@ -64,13 +67,15 @@ F407 保留原有软件温控超时行为，不接入本次 H723 的硬件保护
 使用固定 1 Mbps Classic CAN 标准帧：`command_id=0x270`、`target_id=0x271`；
 `0x271～0x274` 依次反馈 gyro、四元数、accel、Euler，`0x275` 为控制回复。
 
-`bmi270.receive_gyro / receive_quaternion / receive_accel / receive_euler` 选择外置板发送的反馈，
+驱动配置 `receive_gyro / receive_quaternion / receive_accel / receive_euler` 选择外置板发送的反馈，
 禁用帧不参与在线判断。至少选择一类反馈，启动流程完成且所选反馈全部有效后 topic 才在线。
+当前工程生成的配置沿用 gyro、quaternion 开启，accel、Euler 关闭的驱动默认值；
+JSON 仅配置组帧、gyro/四元数期限及独立偏置，未添加当前应用不使用的反馈选项。
 `imu::bmi270_read_feedback(sample)` 读取各帧最新缓存，使用时检查对应的 `*_valid`、`*_received_ms`
 和 `*_updates`，各帧不保证同步；仅选 gyro / accel 时在线不代表姿态有效。
 
-- `calibrate_on_start=true`：静止标定本次 RAM gyro 偏置，accel 偏差清零。
-- `calibrate_on_start=false`：整组下发 `gyro_offset`（rad/s，每轴 ±0.15）和
+- `ahrs.bmi270_calibrate_on_start=true`：静止标定本次 RAM gyro 偏置，accel 偏差清零。
+- `ahrs.bmi270_calibrate_on_start=false`：整组下发 `gyro_offset`（rad/s，每轴 ±0.15）和
   `accel_offset`（m/s²，每轴 ±100），外置板在融合前执行 gyro 减偏差、accel 加偏差，确认后运行。
 
 两种方式均不写 Flash，也不在主板重复补偿；主板与外置板固件须配套更新。
